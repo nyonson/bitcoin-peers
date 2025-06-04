@@ -14,7 +14,7 @@ categories = ["cryptography::cryptocurrencies"]
 bitcoin = { version = "0.32.6" }
 bip324 = { version = "0.7.0", features = ["tokio"] }
 # Basic runtime, networking, I/O utilities, and time utilities.
-tokio = { version = "1", features = ["rt", "net", "io-util", "time"] }
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "rt-multi-thread"] }
 
 [dev-dependencies]
 clap = { version = "4.5.39", features = ["derive"] }

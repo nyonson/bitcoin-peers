@@ -4,6 +4,7 @@ use crate::peer::Peer;
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::Network;
 use std::fmt;
+use tokio::sync::mpsc::{self, Receiver};
 
 /// Errors that can occur during crawler configuration.
 #[derive(Debug, Clone)]
@@ -47,6 +48,24 @@ fn validate_user_agent(user_agent: &str) -> Result<(), CrawlerBuilderError> {
     }
 
     Ok(())
+}
+
+/// Messages sent from the [`Crawler`] to the caller about peer discovery.
+#[derive(Debug, Clone)]
+pub enum CrawlerMessage {
+    /// A peer that has been verified as listening by establishing a connection.
+    Listening(Peer),
+    /// A peer that failed to connect, perhaps due to non-listening or offline.
+    NotListening(Peer),
+}
+
+impl fmt::Display for CrawlerMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CrawlerMessage::Listening(peer) => write!(f, "Listening: {}", peer),
+            CrawlerMessage::NotListening(peer) => write!(f, "Not listening: {}", peer),
+        }
+    }
 }
 
 /// A crawler for the Bitcoin peer-to-peer network.
@@ -142,7 +161,10 @@ impl CrawlerBuilder {
 }
 
 impl Crawler {
-    /// Crawl the Bitcoin network starting from a seed peer.
+    /// Crawl the bitcoin network starting from a seed peer.
+    ///
+    /// This method returns a channel that will receive peer messages as peers are verified.
+    /// The channel will be closed when the crawling is complete or encounters an error.
     ///
     /// # Arguments
     ///
@@ -151,42 +173,102 @@ impl Crawler {
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<Peer>)` - A vector of peer information discovered during crawling
-    /// * `Err(Error)` - If there was an error during crawling.
-    pub async fn crawl(&self, seed_addr: AddrV2, port: u16) -> Result<Vec<Peer>, PeersError> {
-        self.pull_peers(seed_addr, port).await
-    }
-
-    /// Connect to a peer and pull its peers.
+    /// * `Ok(Receiver<PeerMessage>)` - A channel that will receive peer messages
+    /// * `Err(Error)` - If there was an error during crawling setup
     ///
-    /// # Arguments
+    /// # Example
     ///
-    /// * `address` - The bitcoin network address (AddrV2).
-    /// * `port` - The port number.
+    /// ```no_run
+    /// # use bitcoin::p2p::address::AddrV2;
+    /// # use bitcoin::Network;
+    /// # use bitcoin_peers::CrawlerBuilder;
+    /// # use std::net::Ipv4Addr;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let crawler = CrawlerBuilder::new(Network::Bitcoin).build();
+    /// let addr = AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1));
     ///
-    /// # Returns
+    /// // Start crawling and get a channel of peer messages
+    /// let mut peers_rx = crawler.crawl(addr, 8333).await?;
     ///
-    /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
-    /// * `Err(Error)` - If the connection failed or the address type is not supported.
-    async fn pull_peers(&self, address: AddrV2, port: u16) -> Result<Vec<Peer>, PeersError> {
-        let mut conn =
-            Connection::tcp(&address, port, self.network, self.user_agent.clone()).await?;
-        let services = conn.version_handshake(&address, port, None).await?;
+    /// // Process peer messages as they arrive
+    /// while let Some(peer_msg) = peers_rx.recv().await {
+    ///     println!("{}", peer_msg);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn crawl(
+        &self,
+        seed_addr: AddrV2,
+        port: u16,
+    ) -> Result<Receiver<CrawlerMessage>, PeersError> {
+        let (tx, rx) = mpsc::channel(1000);
 
-        println!(
-            "Successfully connected to peer at {:?}:{} with services {}",
-            address, port, services
-        );
+        // Clone the necessary parts of self for the async task
+        let network = self.network;
+        let user_agent = self.user_agent.clone();
 
-        // Request peer addresses
-        let peer_addresses = conn.get_peers().await?;
-        println!(
-            "Retrieved {} peer addresses from {:?}:{}",
-            peer_addresses.len(),
-            address,
-            port
-        );
+        tokio::spawn(async move {
+            let connect_result = Connection::tcp(&seed_addr, port, network, user_agent).await;
 
-        Ok(peer_addresses)
+            let mut conn = match connect_result {
+                Ok(conn) => conn,
+                Err(_) => {
+                    let peer = Peer {
+                        address: seed_addr,
+                        port,
+                        services: Default::default(),
+                    };
+                    let _ = tx.send(CrawlerMessage::NotListening(peer)).await;
+                    return;
+                }
+            };
+
+            let services = match conn.version_handshake(&seed_addr, port, None).await {
+                Ok(services) => services,
+                Err(_) => {
+                    let peer = Peer {
+                        address: seed_addr,
+                        port,
+                        services: Default::default(),
+                    };
+                    let _ = tx.send(CrawlerMessage::NotListening(peer)).await;
+                    return;
+                }
+            };
+
+            let seed_peer = Peer {
+                address: seed_addr.clone(),
+                port,
+                services,
+            };
+            if tx
+                .send(CrawlerMessage::Listening(seed_peer.clone()))
+                .await
+                .is_err()
+            {
+                return; // Receiver was dropped
+            }
+
+            println!(
+                "Successfully connected to peer at {:?}:{} with services {}",
+                seed_addr, port, services
+            );
+
+            // Get peers from the connected node
+            match conn.get_peers().await {
+                Ok(_peers) => {
+                    println!("Got peers");
+                    // For this initial version, we're not verifying connections to discovered peers
+                    // In a future version, we could attempt to connect to each discovered peer
+                    // and report back their connection status
+                }
+                Err(e) => {
+                    eprintln!("Error getting peers: {}", e);
+                }
+            }
+        });
+
+        Ok(rx)
     }
 }
