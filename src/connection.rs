@@ -11,12 +11,13 @@ use bitcoin::p2p::ServiceFlags;
 use bitcoin::Network;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
 use crate::error::PeersError;
+use crate::peer::Peer;
 
 /// User agent string sent in version messages.
 ///
@@ -78,7 +79,7 @@ fn generate_nonce() -> u64 {
 ///
 /// # Short Lived
 ///
-/// The design is currenlty for short lived connections.
+/// Designed for short lived connections.
 ///
 /// # Trait Bounds
 ///
@@ -120,6 +121,125 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
+    /// Requests peer addresses by sending a getaddr message and collects the responses.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
+    /// * `Err(PeersError)` - If an error occurs during the exchange
+    pub async fn get_peers(&mut self) -> Result<Vec<Peer>, PeersError> {
+        let getaddr_message =
+            serialize(NetworkMessage::GetAddr).map_err(|_| PeersError::PeerConnectionFailed)?;
+
+        self.transport
+            .writer()
+            .encrypt_and_write(&getaddr_message, &mut self.writer)
+            .await
+            .map_err(|_| PeersError::PeerConnectionFailed)?;
+
+        println!("Sent getaddr message to peer");
+
+        let mut received_addresses = Vec::new();
+        let mut address_count = 0;
+
+        let max_wait = Duration::from_secs(20);
+        let start_time = Instant::now();
+
+        while start_time.elapsed() < max_wait {
+            // Wait for a message with a short timeout
+            let response = match tokio::time::timeout(
+                Duration::from_secs(5),
+                self.transport.reader().read_and_decrypt(&mut self.reader),
+            )
+            .await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(_)) => return Err(PeersError::PeerConnectionFailed),
+                Err(_) => {
+                    // Timeout on reading - if we have some addresses, consider it done.
+                    if !received_addresses.is_empty() {
+                        break;
+                    }
+                    // Otherwise continue waiting for the overall timeout.
+                    continue;
+                }
+            };
+
+            match deserialize(response.contents()) {
+                Ok(NetworkMessage::Addr(addresses)) => {
+                    println!("Received {} peer addresses", addresses.len());
+                    address_count += addresses.len();
+
+                    // Process each address (tuple of timestamp and Address struct)
+                    for (_, addr) in addresses {
+                        // Extract socket address - only IPv4/IPv6 addresses can be converted
+                        if let Ok(socket_addr) = addr.socket_addr() {
+                            match socket_addr.ip() {
+                                IpAddr::V4(ipv4) => received_addresses.push(Peer {
+                                    address: AddrV2::Ipv4(ipv4),
+                                    port: socket_addr.port(),
+                                    services: addr.services,
+                                }),
+                                IpAddr::V6(ipv6) => received_addresses.push(Peer {
+                                    address: AddrV2::Ipv6(ipv6),
+                                    port: socket_addr.port(),
+                                    services: addr.services,
+                                }),
+                            }
+                        }
+                    }
+                }
+                Ok(NetworkMessage::AddrV2(addresses)) => {
+                    println!("Received {} peer addresses (v2 format)", addresses.len());
+                    address_count += addresses.len();
+                    for addr_msg in addresses {
+                        received_addresses.push(Peer {
+                            address: addr_msg.addr,
+                            port: addr_msg.port,
+                            services: addr_msg.services,
+                        });
+                    }
+                }
+                Ok(NetworkMessage::Ping(nonce)) => {
+                    // Simply respond to ping with pong and continue,
+                    // just in case this function is hanging around for awhile.
+                    let pong_message = serialize(NetworkMessage::Pong(nonce))
+                        .map_err(|_| PeersError::PeerConnectionFailed)?;
+
+                    self.transport
+                        .writer()
+                        .encrypt_and_write(&pong_message, &mut self.writer)
+                        .await
+                        .map_err(|_| PeersError::PeerConnectionFailed)?;
+
+                    println!("Responded to ping with pong");
+                }
+                Ok(message) => {
+                    println!(
+                        "Received unexpected message in version handshake: {:?}, ignoring",
+                        message
+                    );
+                }
+                Err(e) => {
+                    println!("Failed to deserialize message: {:?}", e);
+                    return Err(PeersError::PeerConnectionFailed);
+                }
+            }
+
+            // If we've received a substantial number of addresses, we can finish early
+            if address_count >= 1000 {
+                // Configurable threshold
+                break;
+            }
+        }
+
+        println!(
+            "Collected {} total peer addresses",
+            received_addresses.len()
+        );
+        Ok(received_addresses)
+    }
+
     /// Creates a bitcoin version message for the given peer address.
     ///
     /// # Arguments

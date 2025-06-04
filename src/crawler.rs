@@ -1,5 +1,6 @@
 use crate::connection::Connection;
 use crate::error::PeersError;
+use crate::peer::Peer;
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::Network;
 use std::fmt;
@@ -150,9 +151,9 @@ impl Crawler {
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - If the crawling was successful.
+    /// * `Ok(Vec<Peer>)` - A vector of peer information discovered during crawling
     /// * `Err(Error)` - If there was an error during crawling.
-    pub async fn crawl(&self, seed_addr: AddrV2, port: u16) -> Result<(), PeersError> {
+    pub async fn crawl(&self, seed_addr: AddrV2, port: u16) -> Result<Vec<Peer>, PeersError> {
         self.pull_peers(seed_addr, port).await
     }
 
@@ -165,9 +166,9 @@ impl Crawler {
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - If the connection and handshake were successful.
+    /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
     /// * `Err(Error)` - If the connection failed or the address type is not supported.
-    async fn pull_peers(&self, address: AddrV2, port: u16) -> Result<(), PeersError> {
+    async fn pull_peers(&self, address: AddrV2, port: u16) -> Result<Vec<Peer>, PeersError> {
         let mut conn =
             Connection::tcp(&address, port, self.network, self.user_agent.clone()).await?;
         let services = conn.version_handshake(&address, port, None).await?;
@@ -177,6 +178,15 @@ impl Crawler {
             address, port, services
         );
 
-        Ok(())
+        // Request peer addresses
+        let peer_addresses = conn.get_peers().await?;
+        println!(
+            "Retrieved {} peer addresses from {:?}:{}",
+            peer_addresses.len(),
+            address,
+            port
+        );
+
+        Ok(peer_addresses)
     }
 }

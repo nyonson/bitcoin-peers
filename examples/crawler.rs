@@ -42,12 +42,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder = builder.with_user_agent(user_agent)?;
     }
     let crawler = builder.build();
-    crawler
+    let peers = crawler
         .crawl(addr, args.port)
         .await
         .map_err(|e| format!("Crawler error: {}", e))?;
 
     println!("Crawling completed successfully");
+    println!("Discovered {} peers", peers.len());
+
+    // Print the first 10 peers (or all if less than 10)
+    let display_count = std::cmp::min(peers.len(), 10);
+    if display_count > 0 {
+        println!("First {} peers:", display_count);
+        for (i, peer) in peers.iter().take(display_count).enumerate() {
+            println!("  {}. {}", i + 1, peer);
+        }
+    }
 
     Ok(())
 }

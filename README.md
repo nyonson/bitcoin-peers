@@ -1,3 +1,23 @@
-# Bitcoin Peers
+<div align="center">
+  <h1>Bitcoin Peers</h1>
+  <p>
+    <strong>Bitcoin p2p network tooling</strong>
+  </p>
 
-Bitcoin peers is a library containing general tooling for interacting with and analyzing peers of a bitcoin network. The library takes a semi-opinionated approach, like requiring the use of the *tokio* asynchronous runtime. However, the library's modules can still be composed into higher level utilities.
+  <p>
+    <a href="https://github.com/nyonson/bitcoin-peers/blob/master/LICENSE"><img alt="CC0 1.0 Universal Licensed" src="https://img.shields.io/badge/license-CC0--1.0-blue.svg"/></a>
+    <a href="https://blog.rust-lang.org/2023/12/28/Rust-1.75.0/"><img alt="Rustc Version 1.75.0+" src="https://img.shields.io/badge/rustc-1.75.0%2B-lightgrey.svg"/></a>
+  </p>
+</div>
+
+## About
+
+Bitcoin Peers is a library containing general tooling for interacting with and analyzing peers of a bitcoin network. The library takes a semi-opinionated approach, like requiring the use of the *tokio* asynchronous runtime. However, the library's modules are designed to compose into higher level utilities.
+
+## Contributing
+
+Guidelines are codified in the [justfile](justfile).
+
+## License
+
+The code in this project is licensed under the [Creative Commons CC0 1.0 Universal license](LICENSE).
