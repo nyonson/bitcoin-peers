@@ -6,22 +6,22 @@ use std::fmt;
 
 /// Errors that can occur during crawler configuration.
 #[derive(Debug, Clone)]
-pub enum BuilderError {
+pub enum CrawlerBuilderError {
     /// User agent doesn't follow the required format.
     InvalidUserAgent,
 }
 
-impl fmt::Display for BuilderError {
+impl fmt::Display for CrawlerBuilderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BuilderError::InvalidUserAgent => {
+            CrawlerBuilderError::InvalidUserAgent => {
                 write!(f, "Invalid user agent: must follow format '/Name:Version/'")
             }
         }
     }
 }
 
-impl std::error::Error for BuilderError {}
+impl std::error::Error for CrawlerBuilderError {}
 
 /// Validates that a user agent string follows the Bitcoin Core convention: "/Name:Version/"
 ///
@@ -33,16 +33,16 @@ impl std::error::Error for BuilderError {}
 ///
 /// * `Ok(())` - If the user agent is valid
 /// * `Err(BuilderError)` - If the user agent format is invalid
-fn validate_user_agent(user_agent: &str) -> Result<(), BuilderError> {
+fn validate_user_agent(user_agent: &str) -> Result<(), CrawlerBuilderError> {
     if !user_agent.starts_with('/') || !user_agent.ends_with('/') || !user_agent.contains(':') {
-        return Err(BuilderError::InvalidUserAgent);
+        return Err(CrawlerBuilderError::InvalidUserAgent);
     }
 
     // Extract the part between the slashes, split on the colon.
     let contents = &user_agent[1..user_agent.len() - 1];
     let parts: Vec<&str> = contents.split(':').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        return Err(BuilderError::InvalidUserAgent);
+        return Err(CrawlerBuilderError::InvalidUserAgent);
     }
 
     Ok(())
@@ -117,7 +117,10 @@ impl CrawlerBuilder {
     ///
     /// * `Ok(Self)` - The builder for method chaining if validation succeeds.
     /// * `Err(BuilderError)` - If the user agent format is invalid.
-    pub fn with_user_agent<S: Into<String>>(mut self, user_agent: S) -> Result<Self, BuilderError> {
+    pub fn with_user_agent<S: Into<String>>(
+        mut self,
+        user_agent: S,
+    ) -> Result<Self, CrawlerBuilderError> {
         let user_agent = user_agent.into();
         validate_user_agent(&user_agent)?;
         self.user_agent = Some(user_agent);

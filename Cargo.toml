@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "CC0"
-description = ""
+description = "General tooling for interacting with and analyzing peers of a bitcoin network"
+authors = ["Nick Johnson <nick@yonson.dev>"]
 repository = "https://github.com/nyonson/bitcoin-peers"
+keywords = ["bitcoin", "network", "peer-to-peer"]
+categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
 bitcoin = { version = "0.32.6" }

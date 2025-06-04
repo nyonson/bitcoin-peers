@@ -76,6 +76,10 @@ fn generate_nonce() -> u64 {
 /// It handles the underlying transport, serialization, protocol management,
 /// and connection state (e.g. upgrades).
 ///
+/// # Short Lived
+///
+/// The design is currenlty for short lived connections.
+///
 /// # Trait Bounds
 ///
 /// * [`AsyncRead`]/[`AsyncWrite`] - Required for async I/O operations.
