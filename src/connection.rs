@@ -18,7 +18,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
 use crate::error::PeersError;
-use crate::peer::Peer;
+use crate::peer::{Peer, PeerServices};
 
 /// User agent string sent in version messages.
 ///
@@ -179,12 +179,12 @@ where
                                 IpAddr::V4(ipv4) => received_addresses.push(Peer {
                                     address: AddrV2::Ipv4(ipv4),
                                     port: socket_addr.port(),
-                                    services: addr.services,
+                                    services: PeerServices::Known(addr.services),
                                 }),
                                 IpAddr::V6(ipv6) => received_addresses.push(Peer {
                                     address: AddrV2::Ipv6(ipv6),
                                     port: socket_addr.port(),
-                                    services: addr.services,
+                                    services: PeerServices::Known(addr.services),
                                 }),
                             }
                         }
@@ -197,7 +197,7 @@ where
                         received_addresses.push(Peer {
                             address: addr_msg.addr,
                             port: addr_msg.port,
-                            services: addr_msg.services,
+                            services: PeerServices::Known(addr_msg.services),
                         });
                     }
                 }

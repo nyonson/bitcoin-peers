@@ -245,7 +245,7 @@ impl CrawlSession {
             }
         };
 
-        let peer = peer.with_services(services);
+        let peer = peer.with_known_services(services);
         let _ = self.crawl_tx.send(CrawlerMessage::Listening(peer)).await;
 
         if let Ok(peers) = conn.get_peers().await {
