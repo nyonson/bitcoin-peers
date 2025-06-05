@@ -217,12 +217,11 @@ where
                 }
                 Ok(message) => {
                     debug!(
-                        "Received unexpected message in version handshake: {:?}, ignoring",
-                        message
+                        "Received unexpected message in version handshake: {message:?}, ignoring"
                     );
                 }
                 Err(e) => {
-                    error!("Failed to deserialize message: {:?}", e);
+                    error!("Failed to deserialize message: {e:?}");
                     return Err(PeersError::PeerConnectionFailed);
                 }
             }
@@ -407,8 +406,7 @@ where
                         }
                         _ => {
                             debug!(
-                                "Received duplicate version message in state {:?}, ignoring",
-                                state
+                                "Received duplicate version message in state {state:?}, ignoring"
                             );
                         }
                     }
@@ -425,19 +423,17 @@ where
                     }
                     _ => {
                         debug!(
-                            "Received duplicate verack message in state {:?}, ignoring",
-                            state
+                            "Received duplicate verack message in state {state:?}, ignoring"
                         );
                     }
                 },
                 Ok(message) => {
                     debug!(
-                        "Received unexpected message in version handshake: {:?}, ignoring",
-                        message
+                        "Received unexpected message in version handshake: {message:?}, ignoring"
                     );
                 }
                 Err(e) => {
-                    error!("Failed to deserialize message: {:?}", e);
+                    error!("Failed to deserialize message: {e:?}");
                     return Err(PeersError::PeerConnectionFailed);
                 }
             }

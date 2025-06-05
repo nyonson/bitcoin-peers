@@ -69,8 +69,8 @@ pub enum CrawlerMessage {
 impl fmt::Display for CrawlerMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CrawlerMessage::Listening(peer) => write!(f, "Listening: {}", peer),
-            CrawlerMessage::NotListening(peer) => write!(f, "Not listening: {}", peer),
+            CrawlerMessage::Listening(peer) => write!(f, "Listening: {peer}"),
+            CrawlerMessage::NotListening(peer) => write!(f, "Not listening: {peer}"),
         }
     }
 }

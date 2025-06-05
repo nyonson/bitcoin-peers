@@ -12,7 +12,7 @@ pub enum PeersError {
 impl fmt::Display for PeersError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PeersError::ConnectionError(err) => write!(f, "Connection error: {}", err),
+            PeersError::ConnectionError(err) => write!(f, "Connection error: {err}"),
             PeersError::PeerConnectionFailed => write!(f, "Failed to connect to peer"),
             PeersError::UnsupportedAddressType => write!(f, "Unsupported address type"),
             PeersError::ConnectionLoop => {
