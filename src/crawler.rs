@@ -202,7 +202,7 @@ impl Crawler {
         };
 
         tokio::spawn(async move {
-            session.process().await;
+            session.coordinate().await;
         });
 
         Ok(crawl_rx)
@@ -211,7 +211,7 @@ impl Crawler {
 
 impl CrawlSession {
     /// Tests if a peer is listening and asks for the peers they know about.
-    async fn next(&self, peer: Peer) {
+    async fn process(&self, peer: Peer) {
         // Check and mark tested so we don't re-visit this session.
         {
             let mut tested = self.crawler.tested_peers.lock().await;
@@ -265,7 +265,8 @@ impl CrawlSession {
         }
     }
 
-    async fn process(&self) {
+    /// Coordinate crawling across the peers.
+    async fn coordinate(&self) {
         let tasks = Arc::new(Semaphore::new(8));
 
         loop {
@@ -276,7 +277,7 @@ impl CrawlSession {
                     let permit = tasks.clone().acquire_owned().await.unwrap();
                     let task = self.clone();
                     tokio::spawn(async move {
-                        task.next(peer).await;
+                        task.process(peer).await;
                         drop(permit);
                     });
                 }
