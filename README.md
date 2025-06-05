@@ -1,7 +1,7 @@
 <div align="center">
   <h1>Bitcoin Peers</h1>
   <p>
-    <strong>Bitcoin p2p network tooling</strong>
+    <strong>Tooling for the bitcoin p2p network</strong>
   </p>
 
   <p>
@@ -14,13 +14,9 @@
 
 Bitcoin Peers is a library containing general tooling for interacting with and analyzing peers of a bitcoin network. The library takes a semi-opinionated approach, like requiring the use of the *tokio* asynchronous runtime. However, the library's modules are designed to compose into higher level utilities.
 
-Check out [doc/DESIGN.md](doc/DESIGN.md) for more notes.
+* `Crawler` - Recursively find peers across a network from a seed node.
 
-## Getting Started
-
-* `Crawler` - Recursively find peer information across a network from a seed node.
-
-[Examples](examples) contains module usage and composition.
+Check out [doc/DESIGN.md](doc/DESIGN.md) and [examples](examples) for more information.
 
 ## Contributing
 

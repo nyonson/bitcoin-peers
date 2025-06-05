@@ -1,6 +1,6 @@
-use bitcoin::p2p::address::AddrV2;
+use bitcoin::p2p::{address::AddrV2, ServiceFlags};
 use bitcoin::Network;
-use bitcoin_peers::CrawlerBuilder;
+use bitcoin_peers::{CrawlerBuilder, Peer};
 use clap::Parser;
 use std::net::IpAddr;
 
@@ -42,8 +42,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder = builder.with_user_agent(user_agent)?;
     }
     let crawler = builder.build();
+    let seed = Peer {
+        address: addr,
+        port: args.port,
+        services: ServiceFlags::NONE,
+    };
     let mut peers_rx = crawler
-        .crawl(addr, args.port)
+        .crawl(seed)
         .await
         .map_err(|e| format!("Crawler error: {}", e))?;
 

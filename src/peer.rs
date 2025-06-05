@@ -5,7 +5,7 @@ use bitcoin::p2p::ServiceFlags;
 use std::fmt;
 
 /// Represents a bitcoin peer on the network.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Peer {
     /// The peer's network address.
     pub address: AddrV2,
@@ -29,6 +29,15 @@ impl Peer {
     /// `true` if the peer advertises the service, `false` otherwise.
     pub fn has_service(&self, service: ServiceFlags) -> bool {
         self.services.has(service)
+    }
+
+    /// Returns a new Peer with updated services.
+    pub fn with_services(&self, services: ServiceFlags) -> Self {
+        Peer {
+            address: self.address.clone(),
+            port: self.port,
+            services,
+        }
     }
 }
 

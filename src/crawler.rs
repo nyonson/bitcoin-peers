@@ -1,10 +1,16 @@
 use crate::connection::Connection;
 use crate::error::PeersError;
 use crate::peer::Peer;
-use bitcoin::p2p::address::AddrV2;
 use bitcoin::Network;
-use std::fmt;
-use tokio::sync::mpsc::{self, Receiver};
+use std::{
+    collections::{HashSet, VecDeque},
+    fmt,
+    sync::Arc,
+};
+use tokio::sync::{
+    mpsc::{self, Receiver},
+    Mutex, Semaphore,
+};
 
 /// Errors that can occur during crawler configuration.
 #[derive(Debug, Clone)]
@@ -78,6 +84,10 @@ pub struct Crawler {
     network: Network,
     /// Custom user agent advertised for connection. Default is `/bitcoin-peers:$VERSION/`.
     user_agent: Option<String>,
+    /// Peers which need to be tested. VecDeque for FIFO.
+    discovered_peers: Arc<Mutex<VecDeque<Peer>>>,
+    /// Peers which should no longer be considered.
+    tested_peers: Arc<Mutex<HashSet<Peer>>>,
 }
 
 /// Builder for creating a customized [`Crawler`] instance.
@@ -105,6 +115,12 @@ pub struct CrawlerBuilder {
     network: Network,
     /// Custom user agent advertised for connection.
     user_agent: Option<String>,
+}
+
+#[derive(Clone)]
+struct CrawlSession {
+    crawler: Crawler,
+    crawl_tx: mpsc::Sender<CrawlerMessage>,
 }
 
 impl CrawlerBuilder {
@@ -156,6 +172,8 @@ impl CrawlerBuilder {
         Crawler {
             network: self.network,
             user_agent: self.user_agent,
+            discovered_peers: Arc::new(Mutex::new(VecDeque::new())),
+            tested_peers: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -168,107 +186,107 @@ impl Crawler {
     ///
     /// # Arguments
     ///
-    /// * `seed_addr` - The address of the seed peer to start crawling from.
-    /// * `port` - The port to connect to.
+    /// * `seed` - The seed peer to start crawling from.
     ///
     /// # Returns
     ///
     /// * `Ok(Receiver<PeerMessage>)` - A channel that will receive peer messages
     /// * `Err(Error)` - If there was an error during crawling setup
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use bitcoin::p2p::address::AddrV2;
-    /// # use bitcoin::Network;
-    /// # use bitcoin_peers::CrawlerBuilder;
-    /// # use std::net::Ipv4Addr;
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let crawler = CrawlerBuilder::new(Network::Bitcoin).build();
-    /// let addr = AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1));
-    ///
-    /// // Start crawling and get a channel of peer messages
-    /// let mut peers_rx = crawler.crawl(addr, 8333).await?;
-    ///
-    /// // Process peer messages as they arrive
-    /// while let Some(peer_msg) = peers_rx.recv().await {
-    ///     println!("{}", peer_msg);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn crawl(
-        &self,
-        seed_addr: AddrV2,
-        port: u16,
-    ) -> Result<Receiver<CrawlerMessage>, PeersError> {
-        let (tx, rx) = mpsc::channel(1000);
+    pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, PeersError> {
+        let (crawl_tx, crawl_rx) = mpsc::channel(1000);
+        self.discovered_peers.lock().await.push_back(seed);
 
-        // Clone the necessary parts of self for the async task
-        let network = self.network;
-        let user_agent = self.user_agent.clone();
+        let session = CrawlSession {
+            crawler: self.clone(),
+            crawl_tx,
+        };
 
         tokio::spawn(async move {
-            let connect_result = Connection::tcp(&seed_addr, port, network, user_agent).await;
-
-            let mut conn = match connect_result {
-                Ok(conn) => conn,
-                Err(_) => {
-                    let peer = Peer {
-                        address: seed_addr,
-                        port,
-                        services: Default::default(),
-                    };
-                    let _ = tx.send(CrawlerMessage::NotListening(peer)).await;
-                    return;
-                }
-            };
-
-            let services = match conn.version_handshake(&seed_addr, port, None).await {
-                Ok(services) => services,
-                Err(_) => {
-                    let peer = Peer {
-                        address: seed_addr,
-                        port,
-                        services: Default::default(),
-                    };
-                    let _ = tx.send(CrawlerMessage::NotListening(peer)).await;
-                    return;
-                }
-            };
-
-            let seed_peer = Peer {
-                address: seed_addr.clone(),
-                port,
-                services,
-            };
-            if tx
-                .send(CrawlerMessage::Listening(seed_peer.clone()))
-                .await
-                .is_err()
-            {
-                return; // Receiver was dropped
-            }
-
-            println!(
-                "Successfully connected to peer at {:?}:{} with services {}",
-                seed_addr, port, services
-            );
-
-            // Get peers from the connected node
-            match conn.get_peers().await {
-                Ok(_peers) => {
-                    println!("Got peers");
-                    // For this initial version, we're not verifying connections to discovered peers
-                    // In a future version, we could attempt to connect to each discovered peer
-                    // and report back their connection status
-                }
-                Err(e) => {
-                    eprintln!("Error getting peers: {}", e);
-                }
-            }
+            session.process().await;
         });
 
-        Ok(rx)
+        Ok(crawl_rx)
+    }
+}
+
+impl CrawlSession {
+    /// Tests if a peer is listening and asks for the peers they know about.
+    async fn next(&self, peer: Peer) {
+        // Check and mark tested so we don't re-visit this session.
+        {
+            let mut tested = self.crawler.tested_peers.lock().await;
+            if tested.contains(&peer) {
+                return;
+            }
+            tested.insert(peer.clone());
+        }
+
+        let mut conn = match Connection::tcp(
+            &peer.address,
+            peer.port,
+            self.crawler.network,
+            self.crawler.user_agent.clone(),
+        )
+        .await
+        {
+            Ok(conn) => conn,
+            Err(_) => {
+                let _ = self.crawl_tx.send(CrawlerMessage::NotListening(peer)).await;
+                return;
+            }
+        };
+
+        let services = match conn.version_handshake(&peer.address, peer.port, None).await {
+            Ok(services) => services,
+            Err(_) => {
+                let _ = self.crawl_tx.send(CrawlerMessage::NotListening(peer)).await;
+                return;
+            }
+        };
+
+        let peer = peer.with_services(services);
+        let _ = self.crawl_tx.send(CrawlerMessage::Listening(peer)).await;
+
+        if let Ok(peers) = conn.get_peers().await {
+            let untested_peers = {
+                let tested = self.crawler.tested_peers.lock().await;
+                peers
+                    .into_iter()
+                    .filter(|p| !tested.contains(p))
+                    .collect::<Vec<_>>()
+            };
+
+            if !untested_peers.is_empty() {
+                let mut discovered = self.crawler.discovered_peers.lock().await;
+                for new_peer in untested_peers {
+                    discovered.push_back(new_peer);
+                }
+            }
+        }
+    }
+
+    async fn process(&self) {
+        let tasks = Arc::new(Semaphore::new(8));
+
+        loop {
+            let peer = self.crawler.discovered_peers.lock().await.pop_front();
+            match peer {
+                Some(peer) => {
+                    // Acquire_owned so that it can be moved into the spawned task.
+                    let permit = tasks.clone().acquire_owned().await.unwrap();
+                    let task = self.clone();
+                    tokio::spawn(async move {
+                        task.next(peer).await;
+                        drop(permit);
+                    });
+                }
+                None => {
+                    if tasks.available_permits() == 8 {
+                        println!("Crawling complete - all peers processed");
+                        break;
+                    }
+                }
+            }
+        }
     }
 }

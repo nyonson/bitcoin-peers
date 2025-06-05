@@ -1,6 +1,6 @@
-//! Common bitcoin p2p protocol exchanges.
+//! Bitcoin p2p protocol connection.
 //!
-//! See more [documenation](https://developer.bitcoin.org/reference/p2p_networking.html) on the p2p protocol.
+//! See more [p2p documenation](https://developer.bitcoin.org/reference/p2p_networking.html) on the p2p protocol.
 
 use bip324::serde::{deserialize, serialize};
 use bip324::{AsyncProtocol, Role};
