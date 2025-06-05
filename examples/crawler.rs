@@ -23,7 +23,7 @@ struct Args {
     #[arg(short, long)]
     user_agent: Option<String>,
 
-    /// Log level
+    /// Log level.
     #[arg(short, long, default_value = "info")]
     log_level: String,
 }
@@ -51,7 +51,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log::info!("CRAWLING THE BITCOIN NETWORK");
 
-    // Parse IP address
     let ip_addr = args
         .address
         .parse::<IpAddr>()
@@ -66,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut builder = CrawlerBuilder::new(Network::Bitcoin);
     if let Some(user_agent) = args.user_agent.clone() {
-        log::debug!("Using custom user agent: {}", user_agent);
+        log::debug!("Using custom user agent: {user_agent}");
         builder = builder.with_user_agent(user_agent)?;
     }
     let crawler = builder.build();
@@ -80,10 +79,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut peers_rx = crawler
         .crawl(seed)
         .await
-        .map_err(|e| format!("Crawler error: {}", e))?;
+        .map_err(|e| format!("Crawler error: {e}"))?;
 
     while let Some(peer_msg) = peers_rx.recv().await {
-        log::info!("{}", peer_msg);
+        log::info!("{peer_msg}");
     }
 
     Ok(())

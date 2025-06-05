@@ -284,7 +284,7 @@ impl CrawlSession {
                 }
                 None => {
                     if tasks.available_permits() == 8 {
-                        info!("Crawling complete - all peers processed");
+                        info!("Crawler exhausted");
                         break;
                     }
                 }
