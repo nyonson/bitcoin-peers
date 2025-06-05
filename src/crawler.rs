@@ -2,6 +2,7 @@ use crate::connection::Connection;
 use crate::error::PeersError;
 use crate::peer::Peer;
 use bitcoin::Network;
+use log::info;
 use std::{
     collections::{HashSet, VecDeque},
     fmt,
@@ -283,7 +284,7 @@ impl CrawlSession {
                 }
                 None => {
                     if tasks.available_permits() == 8 {
-                        println!("Crawling complete - all peers processed");
+                        info!("Crawling complete - all peers processed");
                         break;
                     }
                 }

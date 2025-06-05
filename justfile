@@ -35,5 +35,5 @@ tag version remote="upstream":
   git push {{remote}} {{version}}
 
 # Run the crawler example with given seed node.
-crawl ip port="8333":
-    cargo run --example crawler -- --address {{ip}} --port {{port}}
+crawl ip port="8333" log="ERROR":
+    RUST_LOG={{log}} cargo run --example crawler -- --address {{ip}} --port {{port}}

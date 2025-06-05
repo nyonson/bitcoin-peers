@@ -2,6 +2,7 @@ use bitcoin::p2p::{address::AddrV2, ServiceFlags};
 use bitcoin::Network;
 use bitcoin_peers::{CrawlerBuilder, Peer};
 use clap::Parser;
+use log::debug;
 use std::net::IpAddr;
 
 #[derive(Parser, Debug)]
@@ -22,6 +23,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let args = Args::parse();
     let ip_addr = args
         .address
@@ -33,12 +35,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         IpAddr::V6(ipv6) => AddrV2::Ipv6(ipv6),
     };
 
-    println!("Starting Bitcoin peer crawler");
-    println!("Connecting to seed peer at {}:{}", args.address, args.port);
+    println!("CRAWLING THE BITCOIN NETWORK");
 
     let mut builder = CrawlerBuilder::new(Network::Bitcoin);
     if let Some(user_agent) = args.user_agent {
-        println!("Using custom user agent: {}", user_agent);
+        debug!("Using custom user agent: {}", user_agent);
         builder = builder.with_user_agent(user_agent)?;
     }
     let crawler = builder.build();
@@ -51,9 +52,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .crawl(seed)
         .await
         .map_err(|e| format!("Crawler error: {}", e))?;
-
-    println!("Crawling started successfully");
-    println!("Receiving discovered peers...");
 
     while let Some(peer_msg) = peers_rx.recv().await {
         println!("{}", peer_msg);

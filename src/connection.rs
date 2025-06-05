@@ -9,6 +9,7 @@ use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_network::VersionMessage;
 use bitcoin::p2p::ServiceFlags;
 use bitcoin::Network;
+use log::{debug, error};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -137,7 +138,7 @@ where
             .await
             .map_err(|_| PeersError::PeerConnectionFailed)?;
 
-        println!("Sent getaddr message to peer");
+        debug!("Sent getaddr message to peer");
 
         let mut received_addresses = Vec::new();
         let mut address_count = 0;
@@ -167,7 +168,7 @@ where
 
             match deserialize(response.contents()) {
                 Ok(NetworkMessage::Addr(addresses)) => {
-                    println!("Received {} peer addresses", addresses.len());
+                    debug!("Received {} peer addresses", addresses.len());
                     address_count += addresses.len();
 
                     // Process each address (tuple of timestamp and Address struct)
@@ -190,7 +191,7 @@ where
                     }
                 }
                 Ok(NetworkMessage::AddrV2(addresses)) => {
-                    println!("Received {} peer addresses (v2 format)", addresses.len());
+                    debug!("Received {} peer addresses (v2 format)", addresses.len());
                     address_count += addresses.len();
                     for addr_msg in addresses {
                         received_addresses.push(Peer {
@@ -212,16 +213,16 @@ where
                         .await
                         .map_err(|_| PeersError::PeerConnectionFailed)?;
 
-                    println!("Responded to ping with pong");
+                    debug!("Responded to ping with pong");
                 }
                 Ok(message) => {
-                    println!(
+                    debug!(
                         "Received unexpected message in version handshake: {:?}, ignoring",
                         message
                     );
                 }
                 Err(e) => {
-                    println!("Failed to deserialize message: {:?}", e);
+                    error!("Failed to deserialize message: {:?}", e);
                     return Err(PeersError::PeerConnectionFailed);
                 }
             }
@@ -233,7 +234,7 @@ where
             }
         }
 
-        println!(
+        debug!(
             "Collected {} total peer addresses",
             received_addresses.len()
         );
@@ -357,7 +358,7 @@ where
             .await
             .map_err(|_| PeersError::PeerConnectionFailed)?;
 
-        println!("Sent version message to peer");
+        debug!("Sent version message to peer");
         let mut state = HandshakeState::VersionSent;
         let mut services = ServiceFlags::NONE;
 
@@ -376,14 +377,14 @@ where
                     // While this would be hard to trigger in a non-listening crawler scenario,
                     // there are still some network setups which could loopback.
                     if version.nonce == nonce {
-                        println!("Connection loop detected - received same nonce");
+                        error!("Connection loop detected - received same nonce");
                         return Err(PeersError::ConnectionLoop);
                     }
 
                     // Determine if we can process this version message
                     match state {
                         HandshakeState::VersionSent | HandshakeState::VerackReceived => {
-                            println!("Received version message from peer");
+                            debug!("Received version message from peer");
                             services = version.services;
 
                             // Maybe send a SendAddrV2 here to upgrade the connection state.
@@ -396,7 +397,7 @@ where
                                 .await
                                 .map_err(|_| PeersError::PeerConnectionFailed)?;
 
-                            println!("Sent verack message to peer");
+                            debug!("Sent verack message to peer");
 
                             state = if state == HandshakeState::VerackReceived {
                                 HandshakeState::Complete
@@ -405,7 +406,7 @@ where
                             };
                         }
                         _ => {
-                            println!(
+                            debug!(
                                 "Received duplicate version message in state {:?}, ignoring",
                                 state
                             );
@@ -414,7 +415,7 @@ where
                 }
                 Ok(NetworkMessage::Verack) => match state {
                     HandshakeState::VersionSent | HandshakeState::VersionReceived => {
-                        println!("Received verack from peer");
+                        debug!("Received verack from peer");
 
                         state = if state == HandshakeState::VersionReceived {
                             HandshakeState::Complete
@@ -423,26 +424,26 @@ where
                         };
                     }
                     _ => {
-                        println!(
+                        debug!(
                             "Received duplicate verack message in state {:?}, ignoring",
                             state
                         );
                     }
                 },
                 Ok(message) => {
-                    println!(
+                    debug!(
                         "Received unexpected message in version handshake: {:?}, ignoring",
                         message
                     );
                 }
                 Err(e) => {
-                    println!("Failed to deserialize message: {:?}", e);
+                    error!("Failed to deserialize message: {:?}", e);
                     return Err(PeersError::PeerConnectionFailed);
                 }
             }
         }
 
-        println!("Handshake completed successfully");
+        debug!("Handshake completed successfully");
         Ok(services)
     }
 }
