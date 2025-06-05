@@ -1,8 +1,11 @@
+//! Example of using the bitcoin-peers crawler.
+
 use bitcoin::p2p::{address::AddrV2, ServiceFlags};
 use bitcoin::Network;
 use bitcoin_peers::{CrawlerBuilder, Peer};
 use clap::Parser;
-use log::debug;
+use log::LevelFilter;
+use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
 use std::net::IpAddr;
 
 #[derive(Parser, Debug)]
@@ -19,12 +22,36 @@ struct Args {
     /// Custom user agent (optional).
     #[arg(short, long)]
     user_agent: Option<String>,
+
+    /// Log level
+    #[arg(short, long, default_value = "info")]
+    log_level: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
     let args = Args::parse();
+
+    let log_level = match args.log_level.to_lowercase().as_str() {
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        "trace" => LevelFilter::Trace,
+        _ => LevelFilter::Info,
+    };
+
+    TermLogger::init(
+        log_level,
+        Config::default(),
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    )
+    .unwrap();
+
+    log::info!("CRAWLING THE BITCOIN NETWORK");
+
+    // Parse IP address
     let ip_addr = args
         .address
         .parse::<IpAddr>()
@@ -35,26 +62,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         IpAddr::V6(ipv6) => AddrV2::Ipv6(ipv6),
     };
 
-    println!("CRAWLING THE BITCOIN NETWORK");
+    log::debug!("Connecting to seed peer at {}:{}", args.address, args.port);
 
     let mut builder = CrawlerBuilder::new(Network::Bitcoin);
-    if let Some(user_agent) = args.user_agent {
-        debug!("Using custom user agent: {}", user_agent);
+    if let Some(user_agent) = args.user_agent.clone() {
+        log::debug!("Using custom user agent: {}", user_agent);
         builder = builder.with_user_agent(user_agent)?;
     }
     let crawler = builder.build();
+
     let seed = Peer {
         address: addr,
         port: args.port,
         services: ServiceFlags::NONE,
     };
+
     let mut peers_rx = crawler
         .crawl(seed)
         .await
         .map_err(|e| format!("Crawler error: {}", e))?;
 
     while let Some(peer_msg) = peers_rx.recv().await {
-        println!("{}", peer_msg);
+        log::info!("{}", peer_msg);
     }
 
     Ok(())
