@@ -422,9 +422,7 @@ where
                         };
                     }
                     _ => {
-                        debug!(
-                            "Received duplicate verack message in state {state:?}, ignoring"
-                        );
+                        debug!("Received duplicate verack message in state {state:?}, ignoring");
                     }
                 },
                 Ok(message) => {

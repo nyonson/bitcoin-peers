@@ -21,7 +21,7 @@ _test-unit:
 _test-msrv:
   # Handles creating sandboxed environments to ensure no newer binaries sneak in.
   cargo install cargo-msrv@0.18.4
-  cargo msrv --manifest-path protocol/Cargo.toml verify --all-features
+  cargo msrv verify --all-features
 
 # Test that minimum versions of dependency contraints are valid.
 _test-min-versions:
