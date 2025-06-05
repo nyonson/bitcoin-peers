@@ -96,9 +96,9 @@ pub struct Crawler {
 /// # Example
 ///
 /// ```
-/// # fn main() -> Result<(), bitcoin_peers::crawler::BuilderError> {
+/// # fn main() -> Result<(), bitcoin_peers::CrawlerBuilderError> {
 /// use bitcoin::Network;
-/// use bitcoin_peers::crawler::CrawlerBuilder;
+/// use bitcoin_peers::CrawlerBuilder;
 ///
 /// // Create a basic crawler for the Bitcoin mainnet
 /// let basic_crawler = CrawlerBuilder::new(Network::Bitcoin).build();
