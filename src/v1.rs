@@ -1,4 +1,38 @@
 //! Bitcoin V1 protocol transport implementation.
+//!
+//! This module provides a transport implementation for the Bitcoin V1 protocol,
+//! allowing applications to send and receive Bitcoin network messages over TCP.
+//!
+//! # Example
+//!
+//! ```rust
+//! use bitcoin::p2p::Magic;
+//! use bitcoin::p2p::message::NetworkMessage;
+//! use bitcoin_peers::V1Transport;
+//! use tokio::net::TcpStream;
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! // Connect to a bitcoin node.
+//! let mut stream = TcpStream::connect("127.0.0.1:8333").await?;
+//!
+//! // Create a transport for mainnet.
+//! let mut transport = V1Transport::new(Magic::BITCOIN);
+//!
+//! // Send a ping message.
+//! let ping_message = NetworkMessage::Ping(42);
+//! transport.send(ping_message, &mut stream).await?;
+//!
+//! // Receive a response.
+//! let response = transport.receive(&mut stream).await?;
+//!
+//! // Handle the response.
+//! match response {
+//!     NetworkMessage::Pong(nonce) => println!("Received pong with nonce: {}", nonce),
+//!     _ => println!("Received other message: {:?}", response),
+//! }
+//! # Ok(())
+//! # }
+//! ```
 
 use bitcoin::consensus::encode;
 use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
@@ -58,6 +92,9 @@ impl From<encode::Error> for V1TransportError {
 /// State machine for the V1Transport receive method.
 /// This makes the receive method cancellation safe by tracking
 /// progress across potential interruptions.
+///
+/// The state machine allows the `receive` method to be interrupted (e.g., by tokio::select!)
+/// and resume from where it left off when called again, without losing any partially read data.
 #[derive(Debug)]
 enum ReceiveState {
     /// Reading the message header (24 bytes)
@@ -97,6 +134,42 @@ impl ReceiveState {
 }
 
 /// Implements the bitcoin V1 protocol transport.
+///
+/// This transport provides methods to send and receive Bitcoin protocol messages
+/// over any type that implements `AsyncRead` and `AsyncWrite`.
+///
+/// # Examples
+///
+/// Basic usage with a TCP connection:
+///
+/// ```rust
+/// use bitcoin::p2p::Magic;
+/// use bitcoin::p2p::message::NetworkMessage;
+/// use bitcoin_peers::V1Transport;
+/// use tokio::net::TcpStream;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Connect to a bitcoin node.
+/// let mut stream = TcpStream::connect("127.0.0.1:8333").await?;
+///
+/// // Create a transport for mainnet.
+/// let mut transport = V1Transport::new(Magic::BITCOIN);
+///
+/// // Send a message.
+/// let ping_message = NetworkMessage::Ping(42);
+/// transport.send(ping_message, &mut stream).await?;
+///
+/// // Receive a response.
+/// let response = transport.receive(&mut stream).await?;
+///
+/// // Handle the response.
+/// match response {
+///     NetworkMessage::Pong(nonce) => println!("Received pong with nonce: {}", nonce),
+///     _ => println!("Received other message: {:?}", response),
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct V1Transport {
     /// The bitcoin network magic bytes.
@@ -116,7 +189,8 @@ impl V1Transport {
 
     /// Receives a bitcoin network message from the reader.
     ///
-    /// This function is cancellation safe.
+    /// This function is cancellation safe, meaning it can be safely used with `tokio::select!`
+    /// and similar constructs without the risk of leaving the reader in an inconsistent state.
     pub async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, V1TransportError>
     where
         R: AsyncRead + Unpin + Send,

@@ -269,10 +269,7 @@ where
                     debug!("Responded to ping with pong");
                 }
                 _ => {
-                    debug!(
-                        "Received unexpected message in get_peers: {:?}, ignoring",
-                        message
-                    );
+                    debug!("Received unexpected message in get_peers: {message:?}, ignoring");
                 }
             }
 
@@ -443,8 +440,7 @@ where
                         }
                         _ => {
                             debug!(
-                                "Received duplicate version message in state {:?}, ignoring",
-                                state
+                                "Received duplicate version message in state {state:?}, ignoring"
                             );
                         }
                     }
@@ -460,16 +456,12 @@ where
                         };
                     }
                     _ => {
-                        debug!(
-                            "Received duplicate verack message in state {:?}, ignoring",
-                            state
-                        );
+                        debug!("Received duplicate verack message in state {state:?}, ignoring");
                     }
                 },
                 _ => {
                     debug!(
-                        "Received unexpected message in version handshake: {:?}, ignoring",
-                        message
+                        "Received unexpected message in version handshake: {message:?}, ignoring"
                     );
                 }
             }
