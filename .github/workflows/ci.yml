@@ -22,7 +22,7 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy,rustfmt
-      - run: just check ${{ matrix.toolchain }}
+      - run: env && just check ${{ matrix.toolchain }}
   # Build and test the code across platforms.
   test:
     strategy:

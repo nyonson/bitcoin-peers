@@ -791,7 +791,7 @@ where
             NetworkMessage::Ping(nonce) => {
                 // Automatically respond to pings with pongs.
                 self.send(NetworkMessage::Pong(*nonce)).await?;
-                debug!("Responded to ping with pong, nonce: {}", nonce);
+                debug!("Responded to ping with pong, nonce: {nonce}");
             }
             _ => {}
         }
