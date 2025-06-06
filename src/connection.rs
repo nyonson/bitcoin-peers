@@ -17,73 +17,8 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
 use crate::error::PeersError;
-use crate::peer::{Peer, PeerServices};
-use crate::v1::V1Transport;
-
-/// Represents the transport protocol used for the connection.
-pub enum Transport {
-    /// V2 protocol using BIP324 encrypted transport.
-    V2(AsyncProtocol),
-    /// V1 protocol with plaintext messages.
-    #[allow(dead_code)]
-    V1(V1Transport),
-}
-
-impl Transport {
-    /// Send a Bitcoin network message to the transport.
-    pub async fn send<W>(
-        &mut self,
-        message: NetworkMessage,
-        writer: &mut W,
-    ) -> Result<(), PeersError>
-    where
-        W: AsyncWrite + Unpin + Send,
-    {
-        match self {
-            Transport::V2(protocol) => {
-                // Serialize the message
-                let data = bip324::serde::serialize(message)
-                    .map_err(|_| PeersError::PeerConnectionFailed)?;
-
-                // Encrypt and write using BIP324
-                protocol
-                    .writer()
-                    .encrypt_and_write(&data, writer)
-                    .await
-                    .map_err(|_| PeersError::PeerConnectionFailed)
-            }
-            Transport::V1(v1) => v1
-                .send(message, writer)
-                .await
-                .map_err(PeersError::ConnectionError),
-        }
-    }
-
-    /// Receive a Bitcoin network message from the transport.
-    pub async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, PeersError>
-    where
-        R: AsyncRead + Unpin + Send,
-    {
-        match self {
-            Transport::V2(protocol) => {
-                // Read and decrypt using BIP324
-                let message = protocol
-                    .reader()
-                    .read_and_decrypt(reader)
-                    .await
-                    .map_err(|_| PeersError::PeerConnectionFailed)?;
-
-                // Deserialize to NetworkMessage
-                bip324::serde::deserialize(message.contents())
-                    .map_err(|_| PeersError::PeerConnectionFailed)
-            }
-            Transport::V1(v1) => v1
-                .receive(reader)
-                .await
-                .map_err(|_| PeersError::PeerConnectionFailed),
-        }
-    }
-}
+use crate::peer::{Peer, PeerProtocolVersion, PeerServices, MIN_PROTOCOL_VERSION};
+use crate::v1::AsyncV1Transport;
 
 /// User agent string sent in version messages.
 ///
@@ -95,8 +30,64 @@ const BITCOIN_PEERS_USER_AGENT: &str = concat!("/bitcoin-peers:", env!("CARGO_PK
 ///
 /// This address signals to peers that we are not accepting incoming connections
 /// and should not be advertised to other nodes.
-const NON_CONNECTABLE_ADDRESS: SocketAddr =
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
+const NON_CONNECTABLE_ADDRESS: AddrV2 = AddrV2::Ipv4(Ipv4Addr::new(0, 0, 0, 0));
+const NON_CONNECTABLE_PORT: u16 = 0;
+
+/// Represents the transport protocol used for the connection.
+enum Transport {
+    /// V2 protocol using BIP-324 encrypted transport.
+    V2(AsyncProtocol),
+    /// V1 protocol with plaintext messages.
+    #[allow(dead_code)]
+    V1(AsyncV1Transport),
+}
+
+impl Transport {
+    /// Send a bitcoin network message to the transport.
+    async fn send<W>(&mut self, message: NetworkMessage, writer: &mut W) -> Result<(), PeersError>
+    where
+        W: AsyncWrite + Unpin + Send,
+    {
+        match self {
+            Transport::V2(v2) => {
+                let data = bip324::serde::serialize(message)
+                    .map_err(|_| PeersError::PeerConnectionFailed)?;
+
+                v2.writer()
+                    .encrypt_and_write(&data, writer)
+                    .await
+                    .map_err(|_| PeersError::PeerConnectionFailed)
+            }
+            Transport::V1(v1) => v1
+                .send(message, writer)
+                .await
+                .map_err(PeersError::ConnectionError),
+        }
+    }
+
+    /// Receive a bitcoin network message from the transport.
+    async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, PeersError>
+    where
+        R: AsyncRead + Unpin + Send,
+    {
+        match self {
+            Transport::V2(v2) => {
+                let message = v2
+                    .reader()
+                    .read_and_decrypt(reader)
+                    .await
+                    .map_err(|_| PeersError::PeerConnectionFailed)?;
+
+                bip324::serde::deserialize(message.contents())
+                    .map_err(|_| PeersError::PeerConnectionFailed)
+            }
+            Transport::V1(v1) => v1
+                .receive(reader)
+                .await
+                .map_err(|_| PeersError::PeerConnectionFailed),
+        }
+    }
+}
 
 /// Gets the current Unix timestamp (seconds since January 1, 1970 00:00:00 UTC).
 ///
@@ -137,6 +128,75 @@ fn generate_nonce() -> u64 {
     now ^ (pid.rotate_left(32))
 }
 
+/// Configration used to build a connection.
+#[derive(Debug, Clone)]
+pub struct ConnectionConfiguration {
+    /// Local minimum supported protocol version.
+    pub protocol_version: PeerProtocolVersion,
+    /// Custom user agent advertised for connection. Default is `/bitcoin-peers:$VERSION/`.
+    pub user_agent: Option<String>,
+    /// Service flags advertised by this node.
+    pub services: ServiceFlags,
+    /// Address advertised as the sender in version messages.
+    /// For non-IP addresses (Tor, I2P, etc.), the legacy version message
+    /// will use a placeholder, but the real address can be communicated
+    /// to nodes supporting AddrV2.
+    pub sender_address: AddrV2,
+    /// Port for the sender address.
+    pub sender_port: u16,
+    /// Block height advertised in version messages.
+    ///
+    /// Hopefully 0 doesn't initiate some IBD functionallity.
+    pub start_height: i32,
+    /// Whether to relay transactions to this peer.
+    pub relay: bool,
+}
+
+impl ConnectionConfiguration {
+    /// Creates a new configuration for a non-connectable node.
+    ///
+    /// This configuration advertises no services, uses a non-connectable address,
+    /// and doesn't relay transactions. It's suitable for crawlers and other
+    /// light client software that just wants to query the network without serving data.
+    ///
+    /// # Arguments
+    ///
+    /// * `protocol_version` - The protocol version to advertise. Defaults to MIN_PROTOCOL_VERSION if Unknown.
+    /// * `user_agent` - Optional custom user agent string. Defaults to bitcoin-peers default if None.
+    ///
+    /// # Returns
+    ///
+    /// A new ConnectionConfiguration configured for a non-connectable node.
+    pub fn non_connectable(
+        protocol_version: PeerProtocolVersion,
+        user_agent: Option<String>,
+    ) -> Self {
+        Self {
+            protocol_version,
+            user_agent,
+            services: ServiceFlags::NONE,
+            sender_address: NON_CONNECTABLE_ADDRESS,
+            sender_port: NON_CONNECTABLE_PORT,
+            start_height: 0,
+            relay: false,
+        }
+    }
+}
+
+/// Runtime state of a connection.
+struct ConnectionState {
+    /// The protocol version negotiated between peers (minimum of both versions).
+    effective_protocol_version: PeerProtocolVersion,
+}
+
+impl ConnectionState {
+    pub fn new() -> Self {
+        ConnectionState {
+            effective_protocol_version: PeerProtocolVersion::Unknown,
+        }
+    }
+}
+
 /// Represents a connection to a bitcoin peer.
 ///
 /// This struct manages a connection to a bitcoin peer using the bitcoin p2p protocol.
@@ -170,8 +230,13 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    /// Custom user agent advertised for connection. Default is `/bitcoin-peers:$VERSION/`.
-    user_agent: Option<String>,
+    /// Configuration to build the connection.
+    configuration: ConnectionConfiguration,
+    /// Runtime state of the connection.
+    state: ConnectionState,
+    /// The peer this connection is established with.
+    peer: Peer,
+    /// Transport handles serialization and encryption of messages over the connection.
     transport: Transport,
     reader: R,
     writer: W,
@@ -187,6 +252,11 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
+    /// Get a reference to the peer this connection is established with.
+    pub fn peer(&self) -> &Peer {
+        &self.peer
+    }
+
     /// Requests peer addresses by sending a getaddr message and collects the responses.
     ///
     /// # Returns
@@ -236,16 +306,14 @@ where
                         // Extract socket address - only IPv4/IPv6 addresses can be converted
                         if let Ok(socket_addr) = addr.socket_addr() {
                             match socket_addr.ip() {
-                                IpAddr::V4(ipv4) => received_addresses.push(Peer {
-                                    address: AddrV2::Ipv4(ipv4),
-                                    port: socket_addr.port(),
-                                    services: PeerServices::Known(addr.services),
-                                }),
-                                IpAddr::V6(ipv6) => received_addresses.push(Peer {
-                                    address: AddrV2::Ipv6(ipv6),
-                                    port: socket_addr.port(),
-                                    services: PeerServices::Known(addr.services),
-                                }),
+                                IpAddr::V4(ipv4) => received_addresses.push(
+                                    Peer::new(AddrV2::Ipv4(ipv4), socket_addr.port())
+                                        .with_known_services(addr.services),
+                                ),
+                                IpAddr::V6(ipv6) => received_addresses.push(
+                                    Peer::new(AddrV2::Ipv6(ipv6), socket_addr.port())
+                                        .with_known_services(addr.services),
+                                ),
                             }
                         }
                     }
@@ -254,11 +322,10 @@ where
                     debug!("Received {} peer addresses (v2 format)", addresses.len());
                     address_count += addresses.len();
                     for addr_msg in addresses {
-                        received_addresses.push(Peer {
-                            address: addr_msg.addr,
-                            port: addr_msg.port,
-                            services: PeerServices::Known(addr_msg.services),
-                        });
+                        received_addresses.push(
+                            Peer::new(addr_msg.addr, addr_msg.port)
+                                .with_known_services(addr_msg.services),
+                        );
                     }
                 }
                 NetworkMessage::Ping(nonce) => {
@@ -287,74 +354,70 @@ where
         Ok(received_addresses)
     }
 
-    /// Creates a bitcoin version message for the given peer address.
+    /// Creates a bitcoin version message for the connected peer.
     ///
     /// # Arguments
     ///
-    /// * `peer_addr` - The address of the peer in AddrV2 format.
-    /// * `port` - The port number to connect to.
     /// * `nonce` - The nonce value to use for detecting connection loops.
-    /// * `receiver_services` - Optional services we believe the receiver supports. Defaults to [`ServiceFlags::NONE`].
     ///
     /// # Returns
     ///
     /// A [`NetworkMessage::Version`] containing the version information.
-    fn create_version_message(
-        &self,
-        peer_addr: &AddrV2,
-        port: u16,
-        nonce: u64,
-        receiver_services: Option<ServiceFlags>,
-    ) -> NetworkMessage {
-        // Use provided value or default for to NONE for unknown.
-        let receiver_services = receiver_services.unwrap_or(ServiceFlags::NONE);
+    fn create_version_message(&self, nonce: u64) -> NetworkMessage {
+        // Use the known services of the peer if available, otherwise NONE.
+        let receiver_services = match self.peer.services {
+            PeerServices::Known(flags) => flags,
+            PeerServices::Unknown => ServiceFlags::NONE,
+        };
 
         // The version message uses the old Address type for the receiver and sender
         // fields for backwards compatability. For AddrV2 specific transports
         // (Tor/I2P/CJDNS), a dummp address is used and then set later by an AddrV2 message.
         //
         // Convert AddrV2 to SocketAddr for the version message. For non-IP types, use a placeholder IPv6 address.
-        let receiver_socket_addr = match peer_addr {
-            AddrV2::Ipv4(ipv4) => SocketAddr::new(IpAddr::V4(*ipv4), port),
-            AddrV2::Ipv6(ipv6) => SocketAddr::new(IpAddr::V6(*ipv6), port),
-            _ => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
+        let receiver_socket_addr = match &self.peer.address {
+            AddrV2::Ipv4(ipv4) => SocketAddr::new(IpAddr::V4(*ipv4), self.peer.port),
+            AddrV2::Ipv6(ipv6) => SocketAddr::new(IpAddr::V6(*ipv6), self.peer.port),
+            _ => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), self.peer.port),
         };
 
-        let user_agent = match &self.user_agent {
+        let sender_socket_addr = match &self.configuration.sender_address {
+            AddrV2::Ipv4(ipv4) => {
+                SocketAddr::new(IpAddr::V4(*ipv4), self.configuration.sender_port)
+            }
+            AddrV2::Ipv6(ipv6) => {
+                SocketAddr::new(IpAddr::V6(*ipv6), self.configuration.sender_port)
+            }
+            _ => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+
+        let user_agent = match &self.configuration.user_agent {
             Some(agent) => agent.clone(),
             None => BITCOIN_PEERS_USER_AGENT.to_string(),
         };
 
         let version = VersionMessage {
             // The bitcoin p2p protocol version number.
-            //
-            // A peer crawler is not going to making use of these features, but using
-            // too low of version could get filtered by peers.
-            //
-            // Using 70016 because we're interested in compact block filter support (BIP 158),
-            // even though we don't implement the feature ourselves. This allows nodes to
-            // accurately signal their filter capabilities to the crawler.
-            version: 70016,
-            // For a crawler that only connects outbound and doesn't serve data, no services are supported.
-            services: ServiceFlags::NONE,
+            version: self
+                .configuration
+                .protocol_version
+                .unwrap_or(MIN_PROTOCOL_VERSION),
+            // Services supported by this node.
+            services: self.configuration.services,
             // Helps peers synchronize their time and detect significant clock differences.
             timestamp: unix_timestamp(),
             // What we believe of the node, gives them a view of what the network thinks of them.
             receiver: Address::new(&receiver_socket_addr, receiver_services),
-            // Let the receiving peer know we are not connectable.
-            // The 0.0.0.0 address is a common signal to not connect back and do not advertise to other nodes.
-            sender: Address::new(&NON_CONNECTABLE_ADDRESS, ServiceFlags::NONE),
+            // The address other peers should use to connect to us.
+            sender: Address::new(&sender_socket_addr, self.configuration.services),
             // Used to detect connection loops where a node connects to itself.
             nonce,
             // Client identification.
             user_agent,
-            // Tell the peer the block height of the blockchain which it is aware of. Doesn't make
-            // much sense for a crawler which isn't tracking the blockchain.
-            //
-            // Hopefully won't be treated as a node in Initial Block Download (IBD) mode.
-            start_height: 0,
-            // Crawler doesn't need to receive any beyond the things explicitly requested.
-            relay: false,
+            // Tell the peer the block height of the blockchain which it is aware of.
+            start_height: self.configuration.start_height,
+            // Whether to relay transactions to this peer.
+            relay: self.configuration.relay,
         };
 
         NetworkMessage::Version(version)
@@ -362,22 +425,14 @@ where
 
     /// Performs the bitcoin p2p version handshake protocol.
     ///
-    /// # Arguments
-    ///
-    /// * `peer_addr` - The address of the peer in [`AddrV2`] format
-    /// * `peer_port` - The port number to connect to
-    /// * `peer_services` - Optional services we believe the peer supports
+    /// Uses the peer information stored in the connection to perform the handshake.
+    /// Any services discovered during handshake will update the peer's service flags.
     ///
     /// # Returns
     ///
     /// * `Ok(`[`ServiceFlags`]`)` - The peer's advertised service flags
     /// * `Err(`[`CrawlerError`]`)` - If the handshake failed
-    pub async fn version_handshake(
-        &mut self,
-        peer_addr: &AddrV2,
-        peer_port: u16,
-        peer_services: Option<ServiceFlags>,
-    ) -> Result<ServiceFlags, PeersError> {
+    async fn version_handshake(&mut self) -> Result<ServiceFlags, PeersError> {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum HandshakeState {
             // Sent version message, but haven't received anything yet.
@@ -393,9 +448,7 @@ where
         // Generate a nonce for connection loop detection.
         let nonce = generate_nonce();
 
-        // Send version message.
-        let version_message =
-            self.create_version_message(peer_addr, peer_port, nonce, peer_services);
+        let version_message = self.create_version_message(nonce);
         self.transport
             .send(version_message, &mut self.writer)
             .await?;
@@ -423,6 +476,21 @@ where
                         HandshakeState::VersionSent | HandshakeState::VerackReceived => {
                             debug!("Received version message from peer");
                             services = version.services;
+
+                            // Update our peer's services with what we learned.
+                            self.peer.services = PeerServices::Known(services);
+                            // Store the peer's protocol version
+                            self.peer.version = PeerProtocolVersion::Known(version.version);
+
+                            // Calculate and store the effective version (minimum of both) of the connection.
+                            let effective = std::cmp::min(
+                                self.configuration
+                                    .protocol_version
+                                    .unwrap_or(MIN_PROTOCOL_VERSION),
+                                version.version,
+                            );
+                            self.state.effective_protocol_version =
+                                PeerProtocolVersion::Known(effective);
 
                             // Maybe send a SendAddrV2 here to upgrade the connection state.
 
@@ -468,37 +536,39 @@ where
         }
 
         debug!("Handshake completed successfully");
+
         Ok(services)
     }
 }
 
 impl TcpConnection {
-    /// Establish a TCP connection to a bitcoin peer.
+    /// Establish a TCP connection to a bitcoin peer and perform the handshake.
+    ///
+    /// This method establishes the TCP connection and performs the protocol handshake,
+    /// returning a ready connection that can be used for communication.
     ///
     /// # Arguments
     ///
-    /// * `address` - The Bitcoin peer address in [`AddrV2`] format
-    /// * `port` - The port to connect to (typically 8333 for mainnet)
-    /// * `network` - The Bitcoin [`Network`] to use
-    /// * `user_agent` - Optional custom user agent string to use in version messages
+    /// * `peer` - The bitcoin peer to connect to.
+    /// * `network` - The bitcoin [`Network`] to use.
+    /// * `configuration` - Configuration for the connection.
     ///
     /// # Returns
     ///
-    /// * `Ok(`[`TcpConnection`]`)` - A successfully established connection
-    /// * `Err(`[`CrawlerError`]`)` - If the connection attempt failed
+    /// * `Ok(`[`TcpConnection`]`)` - A successfully established and handshaked connection
+    /// * `Err(`[`CrawlerError`]`)` - If the connection attempt or handshake failed
     pub async fn tcp(
-        address: &AddrV2,
-        port: u16,
+        peer: Peer,
         network: Network,
-        user_agent: Option<String>,
+        configuration: ConnectionConfiguration,
     ) -> Result<Self, PeersError> {
-        let ip_addr = match &address {
+        let ip_addr = match &peer.address {
             AddrV2::Ipv4(ipv4) => IpAddr::V4(*ipv4),
             AddrV2::Ipv6(ipv6) => IpAddr::V6(*ipv6),
             // Other address types (Torv2, Torv3, I2p, Cjdns, etc.) are not supported yet.
             _ => return Err(PeersError::UnsupportedAddressType),
         };
-        let socket_addr = SocketAddr::new(ip_addr, port);
+        let socket_addr = SocketAddr::new(ip_addr, peer.port);
 
         let stream =
             match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(socket_addr))
@@ -527,11 +597,16 @@ impl TcpConnection {
             Err(_) => return Err(PeersError::PeerConnectionFailed),
         };
 
-        Ok(Connection {
+        let mut conn = Connection {
+            configuration,
+            state: ConnectionState::new(),
             transport,
             reader,
             writer,
-            user_agent,
-        })
+            peer,
+        };
+
+        conn.version_handshake().await?;
+        Ok(conn)
     }
 }

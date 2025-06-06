@@ -1,6 +1,6 @@
-use crate::connection::Connection;
+use crate::connection::{Connection, ConnectionConfiguration};
 use crate::error::PeersError;
-use crate::peer::Peer;
+use crate::peer::{Peer, PeerProtocolVersion};
 use bitcoin::Network;
 use log::info;
 use std::{
@@ -12,6 +12,13 @@ use tokio::sync::{
     mpsc::{self, Receiver},
     Mutex, Semaphore,
 };
+
+/// The bitcoin p2p protocol version number used by this implementation.
+///
+/// Using 70016 because we're interested in compact block filter support (BIP 158),
+/// even though we don't implement the feature ourselves. This allows nodes to
+/// accurately signal their filter capabilities to the crawler.
+const PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
 
 /// Errors that can occur during crawler configuration.
 #[derive(Debug, Clone)]
@@ -223,10 +230,12 @@ impl CrawlSession {
         }
 
         let mut conn = match Connection::tcp(
-            &peer.address,
-            peer.port,
+            peer.clone(),
             self.crawler.network,
-            self.crawler.user_agent.clone(),
+            ConnectionConfiguration::non_connectable(
+                PROTOCOL_VERSION,
+                self.crawler.user_agent.clone(),
+            ),
         )
         .await
         {
@@ -237,16 +246,12 @@ impl CrawlSession {
             }
         };
 
-        let services = match conn.version_handshake(&peer.address, peer.port, None).await {
-            Ok(services) => services,
-            Err(_) => {
-                let _ = self.crawl_tx.send(CrawlerMessage::NotListening(peer)).await;
-                return;
-            }
-        };
-
-        let peer = peer.with_known_services(services);
-        let _ = self.crawl_tx.send(CrawlerMessage::Listening(peer)).await;
+        // The connection has been established and handshake completed.
+        // Services and version are updated in the peer.
+        let _ = self
+            .crawl_tx
+            .send(CrawlerMessage::Listening(conn.peer().clone()))
+            .await;
 
         if let Ok(peers) = conn.get_peers().await {
             let untested_peers = {

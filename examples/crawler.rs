@@ -2,7 +2,7 @@
 
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::Network;
-use bitcoin_peers::{CrawlerBuilder, Peer, PeerServices};
+use bitcoin_peers::{CrawlerBuilder, Peer};
 use clap::Parser;
 use log::LevelFilter;
 use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
@@ -70,11 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let crawler = builder.build();
 
-    let seed = Peer {
-        address: addr,
-        port: args.port,
-        services: PeerServices::Unknown,
-    };
+    let seed = Peer::new(addr, args.port);
 
     let mut peers_rx = crawler
         .crawl(seed)

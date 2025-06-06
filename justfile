@@ -2,11 +2,11 @@ _default:
     @just --list
 
 # Quick check of the code including lints and formatting.
-check:
-  cargo fmt --check
+check toolchain="nightly":
+  cargo +{{toolchain}} fmt --check
   # Turn warnings into errors.
-  cargo clippy --all-targets -- -D warnings
-  cargo check --all-features
+  cargo +{{toolchain}} clippy --all-targets -- -D warnings
+  cargo +{{toolchain}} check --all-features
 
 # Run a test suite: unit, msrv, or min-versions.
 test suite="unit":

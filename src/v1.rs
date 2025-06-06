@@ -8,7 +8,7 @@
 //! ```rust
 //! use bitcoin::p2p::Magic;
 //! use bitcoin::p2p::message::NetworkMessage;
-//! use bitcoin_peers::V1Transport;
+//! use bitcoin_peers::AsyncV1Transport;
 //! use tokio::net::TcpStream;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,7 +16,7 @@
 //! let mut stream = TcpStream::connect("127.0.0.1:8333").await?;
 //!
 //! // Create a transport for mainnet.
-//! let mut transport = V1Transport::new(Magic::BITCOIN);
+//! let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 //!
 //! // Send a ping message.
 //! let ping_message = NetworkMessage::Ping(42);
@@ -89,7 +89,7 @@ impl From<encode::Error> for V1TransportError {
     }
 }
 
-/// State machine for the V1Transport receive method.
+/// State machine for the [`AsyncV1Transport`] receive method.
 /// This makes the receive method cancellation safe by tracking
 /// progress across potential interruptions.
 ///
@@ -145,7 +145,7 @@ impl ReceiveState {
 /// ```rust
 /// use bitcoin::p2p::Magic;
 /// use bitcoin::p2p::message::NetworkMessage;
-/// use bitcoin_peers::V1Transport;
+/// use bitcoin_peers::AsyncV1Transport;
 /// use tokio::net::TcpStream;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -153,7 +153,7 @@ impl ReceiveState {
 /// let mut stream = TcpStream::connect("127.0.0.1:8333").await?;
 ///
 /// // Create a transport for mainnet.
-/// let mut transport = V1Transport::new(Magic::BITCOIN);
+/// let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 ///
 /// // Send a message.
 /// let ping_message = NetworkMessage::Ping(42);
@@ -171,15 +171,15 @@ impl ReceiveState {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct V1Transport {
+pub struct AsyncV1Transport {
     /// The bitcoin network magic bytes.
     network_magic: Magic,
     /// Current state of the receive operation.
     receive_state: ReceiveState,
 }
 
-impl V1Transport {
-    /// Create a new V1Transport for the specified network magic.
+impl AsyncV1Transport {
+    /// Create a new [`AsyncV1Transport`] for the specified network magic.
     pub fn new(network_magic: Magic) -> Self {
         Self {
             network_magic,
@@ -274,7 +274,7 @@ mod tests {
         let payload = NetworkMessage::Ping(42);
         let message_bytes = create_test_message(Magic::BITCOIN, payload.clone());
         let mut mock_reader = MockIoBuilder::new().read(&message_bytes).build();
-        let mut transport = V1Transport::new(Magic::BITCOIN);
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
         let received = transport.receive(&mut mock_reader).await.unwrap();
 
         match received {
@@ -285,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_message() {
-        let transport = V1Transport::new(Magic::BITCOIN);
+        let transport = AsyncV1Transport::new(Magic::BITCOIN);
         let mut write_buffer = Vec::new();
 
         let message = NetworkMessage::Ping(42);
@@ -303,7 +303,7 @@ mod tests {
         let payload = NetworkMessage::Ping(42);
         let message_bytes = create_test_message(Magic::TESTNET4, payload);
         let mut mock_reader = MockIoBuilder::new().read(&message_bytes).build();
-        let mut transport = V1Transport::new(Magic::BITCOIN);
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let result = transport.receive(&mut mock_reader).await;
         assert!(matches!(result, Err(V1TransportError::MagicMismatch)));
@@ -333,7 +333,7 @@ mod tests {
         test_data.extend_from_slice(&header);
         test_data.extend_from_slice(&invalid_payload);
         let mut mock_reader = MockIoBuilder::new().read(&test_data).build();
-        let mut transport = V1Transport::new(Magic::BITCOIN);
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let result = transport.receive(&mut mock_reader).await;
         assert!(matches!(result, Err(V1TransportError::Deserialize(_))));
@@ -344,7 +344,7 @@ mod tests {
         // Create partial message less than header size.
         let partial_data = vec![0; 10];
         let mut mock_reader = MockIoBuilder::new().read(&partial_data).build();
-        let mut transport = V1Transport::new(Magic::BITCOIN);
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let result = transport.receive(&mut mock_reader).await;
         assert!(matches!(result, Err(V1TransportError::Io(_))));
@@ -358,7 +358,7 @@ mod tests {
         message_bytes.truncate(HEADER_SIZE + 2);
 
         let mut mock_reader = MockIoBuilder::new().read(&message_bytes).build();
-        let mut transport = V1Transport::new(Magic::BITCOIN);
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let result = transport.receive(&mut mock_reader).await;
         assert!(matches!(result, Err(V1TransportError::Io(_))));
@@ -377,7 +377,7 @@ mod tests {
         }
 
         let mut mock_reader = mock_reader.build();
-        let mut transport = V1Transport::new(Magic::BITCOIN);
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
         let received = transport.receive(&mut mock_reader).await.unwrap();
 
         match received {
@@ -398,7 +398,7 @@ mod tests {
         combined.extend_from_slice(&message2);
 
         let mut mock_reader = MockIoBuilder::new().read(&combined).build();
-        let mut transport = V1Transport::new(Magic::BITCOIN);
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let received1 = transport.receive(&mut mock_reader).await.unwrap();
         match received1 {
