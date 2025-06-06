@@ -2,7 +2,6 @@
 //!
 //! See more [p2p documenation](https://developer.bitcoin.org/reference/p2p_networking.html) on the p2p protocol.
 
-use bip324::serde::{deserialize, serialize};
 use bip324::{AsyncProtocol, Role};
 use bitcoin::p2p::address::{AddrV2, Address};
 use bitcoin::p2p::message::NetworkMessage;
@@ -19,6 +18,72 @@ use tokio::net::TcpStream;
 
 use crate::error::PeersError;
 use crate::peer::{Peer, PeerServices};
+use crate::v1::V1Transport;
+
+/// Represents the transport protocol used for the connection.
+pub enum Transport {
+    /// V2 protocol using BIP324 encrypted transport.
+    V2(AsyncProtocol),
+    /// V1 protocol with plaintext messages.
+    #[allow(dead_code)]
+    V1(V1Transport),
+}
+
+impl Transport {
+    /// Send a Bitcoin network message to the transport.
+    pub async fn send<W>(
+        &mut self,
+        message: NetworkMessage,
+        writer: &mut W,
+    ) -> Result<(), PeersError>
+    where
+        W: AsyncWrite + Unpin + Send,
+    {
+        match self {
+            Transport::V2(protocol) => {
+                // Serialize the message
+                let data = bip324::serde::serialize(message)
+                    .map_err(|_| PeersError::PeerConnectionFailed)?;
+
+                // Encrypt and write using BIP324
+                protocol
+                    .writer()
+                    .encrypt_and_write(&data, writer)
+                    .await
+                    .map_err(|_| PeersError::PeerConnectionFailed)
+            }
+            Transport::V1(v1) => v1
+                .send(message, writer)
+                .await
+                .map_err(PeersError::ConnectionError),
+        }
+    }
+
+    /// Receive a Bitcoin network message from the transport.
+    pub async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, PeersError>
+    where
+        R: AsyncRead + Unpin + Send,
+    {
+        match self {
+            Transport::V2(protocol) => {
+                // Read and decrypt using BIP324
+                let message = protocol
+                    .reader()
+                    .read_and_decrypt(reader)
+                    .await
+                    .map_err(|_| PeersError::PeerConnectionFailed)?;
+
+                // Deserialize to NetworkMessage
+                bip324::serde::deserialize(message.contents())
+                    .map_err(|_| PeersError::PeerConnectionFailed)
+            }
+            Transport::V1(v1) => v1
+                .receive(reader)
+                .await
+                .map_err(|_| PeersError::PeerConnectionFailed),
+        }
+    }
+}
 
 /// User agent string sent in version messages.
 ///
@@ -107,7 +172,7 @@ where
 {
     /// Custom user agent advertised for connection. Default is `/bitcoin-peers:$VERSION/`.
     user_agent: Option<String>,
-    transport: AsyncProtocol,
+    transport: Transport,
     reader: R,
     writer: W,
 }
@@ -129,14 +194,10 @@ where
     /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
     /// * `Err(PeersError)` - If an error occurs during the exchange
     pub async fn get_peers(&mut self) -> Result<Vec<Peer>, PeersError> {
-        let getaddr_message =
-            serialize(NetworkMessage::GetAddr).map_err(|_| PeersError::PeerConnectionFailed)?;
-
+        // Send GetAddr message
         self.transport
-            .writer()
-            .encrypt_and_write(&getaddr_message, &mut self.writer)
-            .await
-            .map_err(|_| PeersError::PeerConnectionFailed)?;
+            .send(NetworkMessage::GetAddr, &mut self.writer)
+            .await?;
 
         debug!("Sent getaddr message to peer");
 
@@ -148,13 +209,13 @@ where
 
         while start_time.elapsed() < max_wait {
             // Wait for a message with a short timeout
-            let response = match tokio::time::timeout(
+            let message = match tokio::time::timeout(
                 Duration::from_secs(5),
-                self.transport.reader().read_and_decrypt(&mut self.reader),
+                self.transport.receive(&mut self.reader),
             )
             .await
             {
-                Ok(Ok(response)) => response,
+                Ok(Ok(message)) => message,
                 Ok(Err(_)) => return Err(PeersError::PeerConnectionFailed),
                 Err(_) => {
                     // Timeout on reading - if we have some addresses, consider it done.
@@ -165,9 +226,8 @@ where
                     continue;
                 }
             };
-
-            match deserialize(response.contents()) {
-                Ok(NetworkMessage::Addr(addresses)) => {
+            match message {
+                NetworkMessage::Addr(addresses) => {
                     debug!("Received {} peer addresses", addresses.len());
                     address_count += addresses.len();
 
@@ -190,7 +250,7 @@ where
                         }
                     }
                 }
-                Ok(NetworkMessage::AddrV2(addresses)) => {
+                NetworkMessage::AddrV2(addresses) => {
                     debug!("Received {} peer addresses (v2 format)", addresses.len());
                     address_count += addresses.len();
                     for addr_msg in addresses {
@@ -201,28 +261,18 @@ where
                         });
                     }
                 }
-                Ok(NetworkMessage::Ping(nonce)) => {
-                    // Simply respond to ping with pong and continue,
-                    // just in case this function is hanging around for awhile.
-                    let pong_message = serialize(NetworkMessage::Pong(nonce))
-                        .map_err(|_| PeersError::PeerConnectionFailed)?;
-
+                NetworkMessage::Ping(nonce) => {
+                    // Simply respond to ping with pong and continue
                     self.transport
-                        .writer()
-                        .encrypt_and_write(&pong_message, &mut self.writer)
-                        .await
-                        .map_err(|_| PeersError::PeerConnectionFailed)?;
-
+                        .send(NetworkMessage::Pong(nonce), &mut self.writer)
+                        .await?;
                     debug!("Responded to ping with pong");
                 }
-                Ok(message) => {
+                _ => {
                     debug!(
-                        "Received unexpected message in version handshake: {message:?}, ignoring"
+                        "Received unexpected message in get_peers: {:?}, ignoring",
+                        message
                     );
-                }
-                Err(e) => {
-                    error!("Failed to deserialize message: {e:?}");
-                    return Err(PeersError::PeerConnectionFailed);
                 }
             }
 
@@ -348,14 +398,10 @@ where
 
         // Send version message.
         let version_message =
-            serialize(self.create_version_message(peer_addr, peer_port, nonce, peer_services))
-                .map_err(|_| PeersError::PeerConnectionFailed)?;
-
+            self.create_version_message(peer_addr, peer_port, nonce, peer_services);
         self.transport
-            .writer()
-            .encrypt_and_write(&version_message, &mut self.writer)
-            .await
-            .map_err(|_| PeersError::PeerConnectionFailed)?;
+            .send(version_message, &mut self.writer)
+            .await?;
 
         debug!("Sent version message to peer");
         let mut state = HandshakeState::VersionSent;
@@ -363,15 +409,10 @@ where
 
         // Keep processing messages until handshake is complete.
         while state != HandshakeState::Complete {
-            let response = self
-                .transport
-                .reader()
-                .read_and_decrypt(&mut self.reader)
-                .await
-                .map_err(|_| PeersError::PeerConnectionFailed)?;
+            let message = self.transport.receive(&mut self.reader).await?;
 
-            match deserialize(response.contents()) {
-                Ok(NetworkMessage::Version(version)) => {
+            match message {
+                NetworkMessage::Version(version) => {
                     // Check if the received nonce matches our own (connection loop detection).
                     // While this would be hard to trigger in a non-listening crawler scenario,
                     // there are still some network setups which could loopback.
@@ -388,14 +429,10 @@ where
 
                             // Maybe send a SendAddrV2 here to upgrade the connection state.
 
-                            let verack_message = serialize(NetworkMessage::Verack)
-                                .map_err(|_| PeersError::PeerConnectionFailed)?;
+                            // Send verack
                             self.transport
-                                .writer()
-                                .encrypt_and_write(&verack_message, &mut self.writer)
-                                .await
-                                .map_err(|_| PeersError::PeerConnectionFailed)?;
-
+                                .send(NetworkMessage::Verack, &mut self.writer)
+                                .await?;
                             debug!("Sent verack message to peer");
 
                             state = if state == HandshakeState::VerackReceived {
@@ -406,12 +443,13 @@ where
                         }
                         _ => {
                             debug!(
-                                "Received duplicate version message in state {state:?}, ignoring"
+                                "Received duplicate version message in state {:?}, ignoring",
+                                state
                             );
                         }
                     }
                 }
-                Ok(NetworkMessage::Verack) => match state {
+                NetworkMessage::Verack => match state {
                     HandshakeState::VersionSent | HandshakeState::VersionReceived => {
                         debug!("Received verack from peer");
 
@@ -422,17 +460,17 @@ where
                         };
                     }
                     _ => {
-                        debug!("Received duplicate verack message in state {state:?}, ignoring");
+                        debug!(
+                            "Received duplicate verack message in state {:?}, ignoring",
+                            state
+                        );
                     }
                 },
-                Ok(message) => {
+                _ => {
                     debug!(
-                        "Received unexpected message in version handshake: {message:?}, ignoring"
+                        "Received unexpected message in version handshake: {:?}, ignoring",
+                        message
                     );
-                }
-                Err(e) => {
-                    error!("Failed to deserialize message: {e:?}");
-                    return Err(PeersError::PeerConnectionFailed);
                 }
             }
         }
@@ -493,7 +531,7 @@ impl TcpConnection {
         )
         .await
         {
-            Ok(transport) => transport,
+            Ok(protocol) => Transport::V2(protocol),
             Err(_) => return Err(PeersError::PeerConnectionFailed),
         };
 

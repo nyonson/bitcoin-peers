@@ -19,5 +19,7 @@ log = { version = "0.4.8" }
 
 [dev-dependencies]
 clap = { version = "4.5.39", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 simplelog = { version = "0.12" }
+# For I/O mocking.
+tokio-test = "0.4"
