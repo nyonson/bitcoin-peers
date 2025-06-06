@@ -1,31 +1,39 @@
-//! Bitcoin V1 protocol transport implementation.
+//! Bitcoin protocol transport implementations and tools.
 //!
-//! This module provides a transport implementation for the Bitcoin V1 protocol,
-//! allowing applications to send and receive Bitcoin network messages over TCP.
+//! This module provides transport implementations for Bitcoin network protocols:
+//! - V1 protocol: The traditional plaintext Bitcoin protocol
+//! - V2 protocol: The encrypted protocol specified in BIP-324
+//!
+//! The [`Transport`] enum provides a unified interface that abstracts over these
+//! protocol implementations, allowing higher-level code to work with either transport
+//! transparently.
 //!
 //! # Example
 //!
 //! ```rust
-//! use bitcoin::p2p::Magic;
+//! use bitcoin::Network;
 //! use bitcoin::p2p::message::NetworkMessage;
-//! use bitcoin_peers::AsyncV1Transport;
+//! use bitcoin_peers::{Transport, AsyncV1Transport};
 //! use tokio::net::TcpStream;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Connect to a bitcoin node.
+//! // Connect to a bitcoin node
 //! let mut stream = TcpStream::connect("127.0.0.1:8333").await?;
 //!
-//! // Create a transport for mainnet.
-//! let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
+//! // Create a V1 transport for the Bitcoin mainnet
+//! let v1_transport = AsyncV1Transport::new(Network::Bitcoin.magic());
+//! 
+//! // Wrap it in the Transport enum
+//! let mut transport = Transport::V1(v1_transport);
 //!
-//! // Send a ping message.
+//! // Send a ping message
 //! let ping_message = NetworkMessage::Ping(42);
 //! transport.send(ping_message, &mut stream).await?;
 //!
-//! // Receive a response.
+//! // Receive a response
 //! let response = transport.receive(&mut stream).await?;
 //!
-//! // Handle the response.
+//! // Handle the response
 //! match response {
 //!     NetworkMessage::Pong(nonce) => println!("Received pong with nonce: {}", nonce),
 //!     _ => println!("Received other message: {:?}", response),
@@ -33,7 +41,11 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! The transport layer handles all the protocol-specific details including serialization,
+//! deserialization, encryption (for V2), and network message framing.
 
+use bip324::AsyncProtocol;
 use bitcoin::consensus::encode;
 use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
 use bitcoin::p2p::Magic;
@@ -46,46 +58,50 @@ const HEADER_SIZE: usize = 24;
 /// Offset in the header where the payload length is stored.
 const PAYLOAD_LENGTH_OFFSET: usize = 16;
 
-/// Error types specific to the V1 protocol transport.
+/// Error types specific to the transport layer.
 #[derive(Debug)]
-pub enum V1TransportError {
+pub enum TransportError {
     /// IO error during read/write operations.
     Io(io::Error),
     /// Failed to deserialize a message.
     Deserialize(encode::Error),
     /// Network magic in the message doesn't match the expected value.
     MagicMismatch,
+    /// V2 encryption or decryption failed.
+    V2,
 }
 
-impl fmt::Display for V1TransportError {
+impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            V1TransportError::Io(e) => write!(f, "IO error: {e}"),
-            V1TransportError::Deserialize(e) => write!(f, "Message deserialization error: {e}"),
-            V1TransportError::MagicMismatch => write!(f, "Network magic mismatch"),
+            TransportError::Io(e) => write!(f, "IO error: {e}"),
+            TransportError::Deserialize(e) => write!(f, "Message deserialization error: {e}"),
+            TransportError::MagicMismatch => write!(f, "Network magic mismatch"),
+            TransportError::V2 => write!(f, "BIP324 encryption/decryption error"),
         }
     }
 }
 
-impl std::error::Error for V1TransportError {
+impl std::error::Error for TransportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            V1TransportError::Io(e) => Some(e),
-            V1TransportError::Deserialize(e) => Some(e),
-            V1TransportError::MagicMismatch => None,
+            TransportError::Io(e) => Some(e),
+            TransportError::Deserialize(e) => Some(e),
+            TransportError::MagicMismatch => None,
+            TransportError::V2 => None,
         }
     }
 }
 
-impl From<io::Error> for V1TransportError {
+impl From<io::Error> for TransportError {
     fn from(e: io::Error) -> Self {
-        V1TransportError::Io(e)
+        TransportError::Io(e)
     }
 }
 
-impl From<encode::Error> for V1TransportError {
+impl From<encode::Error> for TransportError {
     fn from(e: encode::Error) -> Self {
-        V1TransportError::Deserialize(e)
+        TransportError::Deserialize(e)
     }
 }
 
@@ -96,7 +112,7 @@ impl From<encode::Error> for V1TransportError {
 /// The state machine allows the `receive` method to be interrupted (e.g., by tokio::select!)
 /// and resume from where it left off when called again, without losing any partially read data.
 #[derive(Debug)]
-enum ReceiveState {
+enum V1ReceiveState {
     /// Reading the message header (24 bytes)
     ReadingHeader {
         header: [u8; HEADER_SIZE],
@@ -110,10 +126,10 @@ enum ReceiveState {
     },
 }
 
-impl ReceiveState {
+impl V1ReceiveState {
     /// Initialize a new state for reading the header.
     fn reading_header() -> Self {
-        ReceiveState::ReadingHeader {
+        V1ReceiveState::ReadingHeader {
             header: [0u8; HEADER_SIZE],
             bytes_read: 0,
         }
@@ -126,7 +142,7 @@ impl ReceiveState {
         buffer.extend_from_slice(&header);
         buffer.resize(HEADER_SIZE + payload_len, 0);
 
-        ReceiveState::ReadingPayload {
+        V1ReceiveState::ReadingPayload {
             buffer,
             bytes_read: HEADER_SIZE,
         }
@@ -175,7 +191,7 @@ pub struct AsyncV1Transport {
     /// The bitcoin network magic bytes.
     network_magic: Magic,
     /// Current state of the receive operation.
-    receive_state: ReceiveState,
+    receive_state: V1ReceiveState,
 }
 
 impl AsyncV1Transport {
@@ -183,7 +199,7 @@ impl AsyncV1Transport {
     pub fn new(network_magic: Magic) -> Self {
         Self {
             network_magic,
-            receive_state: ReceiveState::reading_header(),
+            receive_state: V1ReceiveState::reading_header(),
         }
     }
 
@@ -191,17 +207,17 @@ impl AsyncV1Transport {
     ///
     /// This function is cancellation safe, meaning it can be safely used with `tokio::select!`
     /// and similar constructs without the risk of leaving the reader in an inconsistent state.
-    pub async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, V1TransportError>
+    pub async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, TransportError>
     where
         R: AsyncRead + Unpin + Send,
     {
         loop {
             match &mut self.receive_state {
-                ReceiveState::ReadingHeader { header, bytes_read } => {
+                V1ReceiveState::ReadingHeader { header, bytes_read } => {
                     while *bytes_read < HEADER_SIZE {
                         let n = reader.read(&mut header[*bytes_read..]).await?;
                         if n == 0 {
-                            return Err(V1TransportError::Io(io::Error::new(
+                            return Err(TransportError::Io(io::Error::new(
                                 io::ErrorKind::UnexpectedEof,
                                 "connection closed while reading header",
                             )));
@@ -216,14 +232,14 @@ impl AsyncV1Transport {
                         header[PAYLOAD_LENGTH_OFFSET + 3],
                     ]) as usize;
 
-                    self.receive_state = ReceiveState::reading_payload(*header, payload_len);
+                    self.receive_state = V1ReceiveState::reading_payload(*header, payload_len);
                 }
 
-                ReceiveState::ReadingPayload { buffer, bytes_read } => {
+                V1ReceiveState::ReadingPayload { buffer, bytes_read } => {
                     while *bytes_read < buffer.len() {
                         let n = reader.read(&mut buffer[*bytes_read..]).await?;
                         if n == 0 {
-                            return Err(V1TransportError::Io(io::Error::new(
+                            return Err(TransportError::Io(io::Error::new(
                                 io::ErrorKind::UnexpectedEof,
                                 "connection closed while reading payload",
                             )));
@@ -233,10 +249,10 @@ impl AsyncV1Transport {
 
                     let raw_msg: RawNetworkMessage = encode::deserialize(buffer)?;
                     if raw_msg.magic() != &self.network_magic {
-                        return Err(V1TransportError::MagicMismatch);
+                        return Err(TransportError::MagicMismatch);
                     }
 
-                    self.receive_state = ReceiveState::reading_header();
+                    self.receive_state = V1ReceiveState::reading_header();
                     return Ok(raw_msg.payload().clone());
                 }
             }
@@ -255,6 +271,134 @@ impl AsyncV1Transport {
         writer.flush().await?;
 
         Ok(())
+    }
+}
+
+/// Represents the transport protocol used for Bitcoin peer-to-peer communication.
+///
+/// This enum abstracts over the different Bitcoin network protocols,
+/// providing a unified interface for sending and receiving messages. It handles
+/// all the protocol-specific details like serialization, encryption, and framing.
+///
+/// * `V1` - The traditional plaintext Bitcoin protocol
+/// * `V2` - The encrypted BIP-324 protocol with improved privacy and security
+///
+/// # Examples
+///
+/// Using a V1 transport:
+///
+/// ```rust,no_run
+/// # use bitcoin::p2p::Magic;
+/// # use bitcoin::p2p::message::NetworkMessage;
+/// # use bitcoin_peers::{Transport, AsyncV1Transport};
+/// # use tokio::net::TcpStream;
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut stream = TcpStream::connect("127.0.0.1:8333").await?;
+/// let v1 = AsyncV1Transport::new(Magic::BITCOIN);
+/// let mut transport = Transport::V1(v1);
+///
+/// // Send and receive messages using the transport
+/// transport.send(NetworkMessage::Ping(42), &mut stream).await?;
+/// let response = transport.receive(&mut stream).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// The high-level [`Connection`](crate::Connection) type manages transport selection
+/// automatically based on protocol negotiation.
+pub enum Transport {
+    /// V2 protocol using BIP-324 encrypted transport.
+    V2(AsyncProtocol),
+    /// V1 protocol with plaintext messages.
+    V1(AsyncV1Transport),
+}
+
+impl Transport {
+    /// Send a Bitcoin network message through the transport.
+    ///
+    /// This method handles all the protocol-specific details for sending a message,
+    /// including serialization, framing, and encryption (for V2).
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The Bitcoin network message to send
+    /// * `writer` - Any writable stream implementing AsyncWrite
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Message was successfully sent
+    /// * `Err(TransportError)` - Error occurred during sending
+    ///
+    /// # Errors
+    ///
+    /// This method can fail if:
+    /// * There's an underlying I/O error
+    /// * Serialization fails (rare for valid messages)
+    /// * Encryption fails (V2 only)
+    pub async fn send<W>(
+        &mut self,
+        message: NetworkMessage,
+        writer: &mut W,
+    ) -> Result<(), TransportError>
+    where
+        W: AsyncWrite + Unpin + Send,
+    {
+        match self {
+            Transport::V2(v2) => {
+                let data = bip324::serde::serialize(message).expect("infallible");
+
+                v2.writer()
+                    .encrypt_and_write(&data, writer)
+                    .await
+                    .map_err(|_| TransportError::V2)
+            }
+            Transport::V1(v1) => v1.send(message, writer).await.map_err(TransportError::Io),
+        }
+    }
+
+    /// Receive a Bitcoin network message from the transport.
+    ///
+    /// This method handles all the protocol-specific details for receiving a message,
+    /// including reading, parsing, decryption (for V2), and deserialization.
+    ///
+    /// # Arguments
+    ///
+    /// * `reader` - Any readable stream implementing AsyncRead
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(NetworkMessage)` - Successfully received and parsed message
+    /// * `Err(TransportError)` - Error occurred during reception
+    ///
+    /// # Errors
+    ///
+    /// This method can fail if:
+    /// * There's an underlying I/O error (including connection closed)
+    /// * Message deserialization fails (invalid or corrupted message)
+    /// * Network magic doesn't match (V1 only)
+    /// * Decryption fails (V2 only)
+    ///
+    /// # Cancellation Safety
+    ///
+    /// This method is cancellation safe. If it's used with `tokio::select!` and
+    /// another branch completes first, the read operation can be safely resumed later
+    /// without data loss or protocol corruption.
+    pub async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, TransportError>
+    where
+        R: AsyncRead + Unpin + Send,
+    {
+        match self {
+            Transport::V2(v2) => {
+                let message = v2
+                    .reader()
+                    .read_and_decrypt(reader)
+                    .await
+                    .map_err(|_| TransportError::V2)?;
+
+                bip324::serde::deserialize(message.contents()).map_err(|_| TransportError::V2)
+            }
+            Transport::V1(v1) => v1.receive(reader).await,
+        }
     }
 }
 
@@ -306,7 +450,7 @@ mod tests {
         let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let result = transport.receive(&mut mock_reader).await;
-        assert!(matches!(result, Err(V1TransportError::MagicMismatch)));
+        assert!(matches!(result, Err(TransportError::MagicMismatch)));
     }
 
     #[tokio::test]
@@ -336,7 +480,7 @@ mod tests {
         let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let result = transport.receive(&mut mock_reader).await;
-        assert!(matches!(result, Err(V1TransportError::Deserialize(_))));
+        assert!(matches!(result, Err(TransportError::Deserialize(_))));
     }
 
     #[tokio::test]
@@ -347,7 +491,7 @@ mod tests {
         let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let result = transport.receive(&mut mock_reader).await;
-        assert!(matches!(result, Err(V1TransportError::Io(_))));
+        assert!(matches!(result, Err(TransportError::Io(_))));
     }
 
     #[tokio::test]
@@ -361,7 +505,7 @@ mod tests {
         let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
 
         let result = transport.receive(&mut mock_reader).await;
-        assert!(matches!(result, Err(V1TransportError::Io(_))));
+        assert!(matches!(result, Err(TransportError::Io(_))));
     }
 
     #[tokio::test]

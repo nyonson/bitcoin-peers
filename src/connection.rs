@@ -1,13 +1,13 @@
 //! Bitcoin p2p protocol connection.
 //!
-//! This module provides connection handling for the Bitcoin peer-to-peer network.
+//! This module provides connection handling for the bitcoin peer-to-peer network.
 //! It implements the bitcoin p2p protocol, including version handshake, message
 //! serialization/deserialization, and protocol-level behaviors like automatic
 //! ping-pong responses.
 //!
 //! # Examples
 //!
-//! Creating a TCP connection to a Bitcoin peer:
+//! Creating a TCP connection to a bitcoin peer:
 //!
 //! ```rust,no_run
 //! use bitcoin::Network;
@@ -50,7 +50,7 @@ use crate::peer::{
     Peer, PeerProtocolVersion, PeerServices, ADDRV2_MIN_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
     SENDHEADERS_MIN_PROTOCOL_VERSION, WTXID_RELAY_MIN_PROTOCOL_VERSION,
 };
-use crate::v1::AsyncV1Transport;
+use crate::transport::{Transport, TransportError};
 use bip324::{AsyncProtocol, Role};
 use bitcoin::p2p::address::{AddrV2, Address};
 use bitcoin::p2p::message::NetworkMessage;
@@ -71,7 +71,7 @@ use tokio::net::TcpStream;
 #[derive(Debug)]
 pub enum ConnectionError {
     Io(io::Error),
-    TransportFailed,
+    TransportFailed(TransportError),
     ProtocolFailed,
     UnsupportedAddressType,
     ConnectionLoop,
@@ -81,8 +81,8 @@ impl fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConnectionError::Io(err) => write!(f, "Connection error: {err}"),
-            ConnectionError::TransportFailed => {
-                write!(f, "Transport layer failed in peer connection")
+            ConnectionError::TransportFailed(err) => {
+                write!(f, "Transport layer failed in peer connection: {err}")
             }
             ConnectionError::ProtocolFailed => {
                 write!(f, "Protocol handling failed in peer communication")
@@ -99,7 +99,7 @@ impl Error for ConnectionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             ConnectionError::Io(err) => Some(err),
-            ConnectionError::TransportFailed => None,
+            ConnectionError::TransportFailed(err) => Some(err),
             ConnectionError::ProtocolFailed => None,
             ConnectionError::UnsupportedAddressType => None,
             ConnectionError::ConnectionLoop => None,
@@ -110,6 +110,12 @@ impl Error for ConnectionError {
 impl From<io::Error> for ConnectionError {
     fn from(err: io::Error) -> Self {
         ConnectionError::Io(err)
+    }
+}
+
+impl From<TransportError> for ConnectionError {
+    fn from(err: TransportError) -> Self {
+        ConnectionError::TransportFailed(err)
     }
 }
 
@@ -149,63 +155,6 @@ const BITCOIN_PEERS_USER_AGENT: &str = concat!("/bitcoin-peers:", env!("CARGO_PK
 /// and should not be advertised to other nodes.
 const NON_CONNECTABLE_ADDRESS: AddrV2 = AddrV2::Ipv4(Ipv4Addr::new(0, 0, 0, 0));
 const NON_CONNECTABLE_PORT: u16 = 0;
-
-/// Represents the transport protocol used for the connection.
-enum Transport {
-    /// V2 protocol using BIP-324 encrypted transport.
-    V2(AsyncProtocol),
-    /// V1 protocol with plaintext messages.
-    #[allow(dead_code)]
-    V1(AsyncV1Transport),
-}
-
-impl Transport {
-    /// Send a bitcoin network message to the transport.
-    async fn send<W>(
-        &mut self,
-        message: NetworkMessage,
-        writer: &mut W,
-    ) -> Result<(), ConnectionError>
-    where
-        W: AsyncWrite + Unpin + Send,
-    {
-        match self {
-            Transport::V2(v2) => {
-                let data = bip324::serde::serialize(message)
-                    .map_err(|_| ConnectionError::ProtocolFailed)?;
-
-                v2.writer()
-                    .encrypt_and_write(&data, writer)
-                    .await
-                    .map_err(|_| ConnectionError::TransportFailed)
-            }
-            Transport::V1(v1) => v1.send(message, writer).await.map_err(ConnectionError::Io),
-        }
-    }
-
-    /// Receive a bitcoin network message from the transport.
-    async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, ConnectionError>
-    where
-        R: AsyncRead + Unpin + Send,
-    {
-        match self {
-            Transport::V2(v2) => {
-                let message = v2
-                    .reader()
-                    .read_and_decrypt(reader)
-                    .await
-                    .map_err(|_| ConnectionError::TransportFailed)?;
-
-                bip324::serde::deserialize(message.contents())
-                    .map_err(|_| ConnectionError::ProtocolFailed)
-            }
-            Transport::V1(v1) => v1
-                .receive(reader)
-                .await
-                .map_err(|_| ConnectionError::ProtocolFailed),
-        }
-    }
-}
 
 /// Gets the current Unix timestamp (seconds since January 1, 1970 00:00:00 UTC).
 ///
@@ -797,7 +746,10 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
-        self.transport.send(message, &mut self.writer).await
+        self.transport
+            .send(message, &mut self.writer)
+            .await
+            .map_err(|e: TransportError| ConnectionError::TransportFailed(e))
     }
 }
 
@@ -807,7 +759,11 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
-        let message = self.transport.receive(&mut self.reader).await?;
+        let message = self
+            .transport
+            .receive(&mut self.reader)
+            .await
+            .map_err(|e: TransportError| ConnectionError::TransportFailed(e))?;
 
         // Handle protocol-level messages that affect connection state.
         match &message {
@@ -879,7 +835,11 @@ impl TcpPeerConnection {
             {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(e)) => return Err(ConnectionError::Io(e)),
-                Err(_) => return Err(ConnectionError::TransportFailed),
+                Err(_) => {
+                    return Err(ConnectionError::TransportFailed(TransportError::Io(
+                        io::Error::new(io::ErrorKind::TimedOut, "Connection attempt timed out"),
+                    )))
+                }
             };
 
         // Allow small packets which is helpful for p2p protocol.
@@ -897,7 +857,7 @@ impl TcpPeerConnection {
         .await
         {
             Ok(protocol) => Transport::V2(protocol),
-            Err(_) => return Err(ConnectionError::TransportFailed),
+            Err(_) => return Err(ConnectionError::TransportFailed(TransportError::V2)),
         };
 
         let mut conn = PeerConnection {
@@ -917,6 +877,7 @@ impl TcpPeerConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::AsyncV1Transport;
     use bitcoin::consensus::encode;
     use bitcoin::p2p::message::NetworkMessage;
     use bitcoin::p2p::message_network::VersionMessage;
@@ -952,7 +913,7 @@ mod tests {
 
         match received {
             NetworkMessage::Pong(nonce) => assert_eq!(nonce, 42),
-            _ => panic!("Expected Pong message, got {:?}", received),
+            _ => panic!("Expected Pong message, got {received:?}"),
         }
     }
 
@@ -984,7 +945,7 @@ mod tests {
 
         match received {
             NetworkMessage::Ping(nonce) => assert_eq!(nonce, 123),
-            _ => panic!("Expected Ping message, got {:?}", received),
+            _ => panic!("Expected Ping message, got {received:?}"),
         }
 
         let writer = connection.writer;
