@@ -2,6 +2,8 @@
 //!
 //! See more [p2p documenation](https://developer.bitcoin.org/reference/p2p_networking.html) on the p2p protocol.
 
+use crate::peer::{Peer, PeerProtocolVersion, PeerServices, MIN_PROTOCOL_VERSION};
+use crate::v1::AsyncV1Transport;
 use bip324::{AsyncProtocol, Role};
 use bitcoin::p2p::address::{AddrV2, Address};
 use bitcoin::p2p::message::NetworkMessage;
@@ -9,6 +11,9 @@ use bitcoin::p2p::message_network::VersionMessage;
 use bitcoin::p2p::ServiceFlags;
 use bitcoin::Network;
 use log::{debug, error};
+use std::error::Error;
+use std::fmt;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,9 +21,50 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
-use crate::error::PeersError;
-use crate::peer::{Peer, PeerProtocolVersion, PeerServices, MIN_PROTOCOL_VERSION};
-use crate::v1::AsyncV1Transport;
+#[derive(Debug)]
+pub enum ConnectionError {
+    Io(io::Error),
+    TransportFailed,
+    ProtocolFailed,
+    UnsupportedAddressType,
+    ConnectionLoop,
+}
+
+impl fmt::Display for ConnectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConnectionError::Io(err) => write!(f, "Connection error: {err}"),
+            ConnectionError::TransportFailed => {
+                write!(f, "Transport layer failed in peer connection")
+            }
+            ConnectionError::ProtocolFailed => {
+                write!(f, "Protocol handling failed in peer communication")
+            }
+            ConnectionError::UnsupportedAddressType => write!(f, "Unsupported address type"),
+            ConnectionError::ConnectionLoop => {
+                write!(f, "Detected connection to self (matching nonce)")
+            }
+        }
+    }
+}
+
+impl Error for ConnectionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ConnectionError::Io(err) => Some(err),
+            ConnectionError::TransportFailed => None,
+            ConnectionError::ProtocolFailed => None,
+            ConnectionError::UnsupportedAddressType => None,
+            ConnectionError::ConnectionLoop => None,
+        }
+    }
+}
+
+impl From<io::Error> for ConnectionError {
+    fn from(err: io::Error) -> Self {
+        ConnectionError::Io(err)
+    }
+}
 
 /// User agent string sent in version messages.
 ///
@@ -44,29 +90,30 @@ enum Transport {
 
 impl Transport {
     /// Send a bitcoin network message to the transport.
-    async fn send<W>(&mut self, message: NetworkMessage, writer: &mut W) -> Result<(), PeersError>
+    async fn send<W>(
+        &mut self,
+        message: NetworkMessage,
+        writer: &mut W,
+    ) -> Result<(), ConnectionError>
     where
         W: AsyncWrite + Unpin + Send,
     {
         match self {
             Transport::V2(v2) => {
                 let data = bip324::serde::serialize(message)
-                    .map_err(|_| PeersError::PeerConnectionFailed)?;
+                    .map_err(|_| ConnectionError::ProtocolFailed)?;
 
                 v2.writer()
                     .encrypt_and_write(&data, writer)
                     .await
-                    .map_err(|_| PeersError::PeerConnectionFailed)
+                    .map_err(|_| ConnectionError::TransportFailed)
             }
-            Transport::V1(v1) => v1
-                .send(message, writer)
-                .await
-                .map_err(PeersError::ConnectionError),
+            Transport::V1(v1) => v1.send(message, writer).await.map_err(ConnectionError::Io),
         }
     }
 
     /// Receive a bitcoin network message from the transport.
-    async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, PeersError>
+    async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, ConnectionError>
     where
         R: AsyncRead + Unpin + Send,
     {
@@ -76,15 +123,15 @@ impl Transport {
                     .reader()
                     .read_and_decrypt(reader)
                     .await
-                    .map_err(|_| PeersError::PeerConnectionFailed)?;
+                    .map_err(|_| ConnectionError::TransportFailed)?;
 
                 bip324::serde::deserialize(message.contents())
-                    .map_err(|_| PeersError::PeerConnectionFailed)
+                    .map_err(|_| ConnectionError::ProtocolFailed)
             }
             Transport::V1(v1) => v1
                 .receive(reader)
                 .await
-                .map_err(|_| PeersError::PeerConnectionFailed),
+                .map_err(|_| ConnectionError::ProtocolFailed),
         }
     }
 }
@@ -262,8 +309,8 @@ where
     /// # Returns
     ///
     /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
-    /// * `Err(PeersError)` - If an error occurs during the exchange
-    pub async fn get_peers(&mut self) -> Result<Vec<Peer>, PeersError> {
+    /// * `Err(ConnectionError)` - If an error occurs during the exchange
+    pub async fn get_peers(&mut self) -> Result<Vec<Peer>, ConnectionError> {
         // Send GetAddr message
         self.transport
             .send(NetworkMessage::GetAddr, &mut self.writer)
@@ -286,7 +333,7 @@ where
             .await
             {
                 Ok(Ok(message)) => message,
-                Ok(Err(_)) => return Err(PeersError::PeerConnectionFailed),
+                Ok(Err(_)) => return Err(ConnectionError::ProtocolFailed),
                 Err(_) => {
                     // Timeout on reading - if we have some addresses, consider it done.
                     if !received_addresses.is_empty() {
@@ -432,7 +479,7 @@ where
     ///
     /// * `Ok(`[`ServiceFlags`]`)` - The peer's advertised service flags
     /// * `Err(`[`CrawlerError`]`)` - If the handshake failed
-    async fn version_handshake(&mut self) -> Result<ServiceFlags, PeersError> {
+    async fn version_handshake(&mut self) -> Result<ServiceFlags, ConnectionError> {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum HandshakeState {
             // Sent version message, but haven't received anything yet.
@@ -468,7 +515,7 @@ where
                     // there are still some network setups which could loopback.
                     if version.nonce == nonce {
                         error!("Connection loop detected - received same nonce");
-                        return Err(PeersError::ConnectionLoop);
+                        return Err(ConnectionError::ConnectionLoop);
                     }
 
                     // Determine if we can process this version message
@@ -561,12 +608,12 @@ impl TcpConnection {
         peer: Peer,
         network: Network,
         configuration: ConnectionConfiguration,
-    ) -> Result<Self, PeersError> {
+    ) -> Result<Self, ConnectionError> {
         let ip_addr = match &peer.address {
             AddrV2::Ipv4(ipv4) => IpAddr::V4(*ipv4),
             AddrV2::Ipv6(ipv6) => IpAddr::V6(*ipv6),
             // Other address types (Torv2, Torv3, I2p, Cjdns, etc.) are not supported yet.
-            _ => return Err(PeersError::UnsupportedAddressType),
+            _ => return Err(ConnectionError::UnsupportedAddressType),
         };
         let socket_addr = SocketAddr::new(ip_addr, peer.port);
 
@@ -575,8 +622,8 @@ impl TcpConnection {
                 .await
             {
                 Ok(Ok(stream)) => stream,
-                Ok(Err(e)) => return Err(PeersError::ConnectionError(e)),
-                Err(_) => return Err(PeersError::PeerConnectionFailed),
+                Ok(Err(e)) => return Err(ConnectionError::Io(e)),
+                Err(_) => return Err(ConnectionError::TransportFailed),
             };
 
         // Allow small packets which is helpful for p2p protocol.
@@ -594,7 +641,7 @@ impl TcpConnection {
         .await
         {
             Ok(protocol) => Transport::V2(protocol),
-            Err(_) => return Err(PeersError::PeerConnectionFailed),
+            Err(_) => return Err(ConnectionError::TransportFailed),
         };
 
         let mut conn = Connection {

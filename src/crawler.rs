@@ -1,5 +1,4 @@
-use crate::connection::{Connection, ConnectionConfiguration};
-use crate::error::PeersError;
+use crate::connection::{Connection, ConnectionConfiguration, ConnectionError};
 use crate::peer::{Peer, PeerProtocolVersion};
 use bitcoin::Network;
 use log::info;
@@ -200,7 +199,7 @@ impl Crawler {
     ///
     /// * `Ok(Receiver<PeerMessage>)` - A channel that will receive peer messages
     /// * `Err(Error)` - If there was an error during crawling setup
-    pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, PeersError> {
+    pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, ConnectionError> {
         let (crawl_tx, crawl_rx) = mpsc::channel(1000);
         self.discovered_peers.lock().await.push_back(seed);
 
