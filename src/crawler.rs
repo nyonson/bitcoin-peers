@@ -203,16 +203,12 @@ impl Crawler {
     ///
     /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
     /// * `Err(ConnectionError)` - If an error occurs during the exchange
-    async fn get_peers<R, W>(
+    async fn get_peers(
         &self,
-        conn: &mut Connection<R, W>,
+        conn: &mut Connection,
         max_wait: Duration,
         max_addresses: usize,
-    ) -> Result<Vec<Peer>, ConnectionError>
-    where
-        R: tokio::io::AsyncRead + Unpin + Send,
-        W: tokio::io::AsyncWrite + Unpin + Send,
-    {
+    ) -> Result<Vec<Peer>, ConnectionError> {
         // Send GetAddr message
         conn.send(NetworkMessage::GetAddr).await?;
 

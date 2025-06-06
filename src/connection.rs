@@ -69,6 +69,30 @@ impl From<io::Error> for ConnectionError {
     }
 }
 
+/// Trait for types that can send Bitcoin network messages.
+pub trait MessageSender {
+    /// Send a message to the peer.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The Bitcoin network message to send.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or the specific error that occurred.
+    async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError>;
+}
+
+/// Trait for types that can receive Bitcoin network messages.
+pub trait MessageReceiver {
+    /// Receive a message from the peer.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(`[`NetworkMessage`]`)` - The received message
+    /// * `Err(`[`ConnectionError`]`)` - If an error occurred during message reception
+    async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError>;
+}
 /// User agent string sent in version messages.
 ///
 /// This identifies crawler software to other peers on the network.
@@ -379,7 +403,7 @@ impl ConnectionState {
 /// [`Sync`]: core::marker::Sync
 /// [`Arc`]: std::sync::Arc
 /// [`Mutex`]: tokio::sync::Mutex
-pub struct Connection<R, W>
+pub struct PeerConnection<R, W>
 where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
@@ -398,10 +422,103 @@ where
 
 /// A TCP-based connection to a bitcoin peer.
 ///
-/// This is a convenience type alias for [`Connection`] with Tokio's TCP stream halves.
-pub type TcpConnection = Connection<OwnedReadHalf, OwnedWriteHalf>;
+/// This is a convenience type alias for [`PeerConnection`] with Tokio's TCP stream halves.
+pub type TcpPeerConnection = PeerConnection<OwnedReadHalf, OwnedWriteHalf>;
 
-impl<R, W> Connection<R, W>
+/// Provides a unified interface to different types of bitcoin peer connections.
+///
+/// This enum is the primary API for interacting with bitcoin peers. It abstracts over
+/// different connection transport types (TCP, WebSocket, Tor, etc.) and provides a
+/// consistent interface for sending and receiving messages.
+///
+/// Using this enum instead of the specific connection types allows for more flexible
+/// code that can work with any connection type without needing to know the implementation
+/// details.
+pub enum Connection {
+    Tcp(TcpPeerConnection),
+    // WebSocket(WebSocketConnection),
+    // Tor(TorConnection),
+    // etc.
+}
+
+impl Connection {
+    /// Get a reference to the peer this connection is established with.
+    pub fn peer(&self) -> &Peer {
+        match self {
+            Connection::Tcp(conn) => conn.peer(),
+        }
+    }
+
+    /// Send a message to the peer.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The Bitcoin network message to send.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or the specific error that occurred.
+    pub async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        match self {
+            Connection::Tcp(conn) => conn.send(message).await,
+        }
+    }
+
+    /// Receive a message from the peer.
+    ///
+    /// This method handles certain protocol-level messages automatically,
+    /// such as responding to pings and updating protocol negotiation state.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(`[`NetworkMessage`]`)` - The received message
+    /// * `Err(`[`ConnectionError`]`)` - If an error occurred during message reception
+    pub async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        match self {
+            Connection::Tcp(conn) => conn.receive().await,
+        }
+    }
+
+    /// Establish a TCP connection to a bitcoin peer and perform the handshake.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer` - The bitcoin peer to connect to.
+    /// * `network` - The bitcoin [`Network`] to use.
+    /// * `configuration` - Configuration for the connection.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(`[`Self`]`)` - A successfully established and handshaked connection
+    /// * `Err(`[`ConnectionError`]`)` - If the connection attempt or handshake failed
+    pub async fn tcp(
+        peer: Peer,
+        network: Network,
+        configuration: ConnectionConfiguration,
+    ) -> Result<Self, ConnectionError> {
+        Ok(Connection::Tcp(
+            TcpPeerConnection::tcp(peer, network, configuration).await?,
+        ))
+    }
+}
+
+impl MessageSender for Connection {
+    async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        match self {
+            Connection::Tcp(conn) => conn.send(message).await,
+        }
+    }
+}
+
+impl MessageReceiver for Connection {
+    async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        match self {
+            Connection::Tcp(conn) => conn.receive().await,
+        }
+    }
+}
+
+impl<R, W> PeerConnection<R, W>
 where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
@@ -413,51 +530,12 @@ where
 
     /// Send a message to the peer.
     pub async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
-        self.transport.send(message, &mut self.writer).await
+        MessageSender::send(self, message).await
     }
 
     /// Receive a message from the peer.
-    ///
-    /// This method handles certain protocol-level messages automatically:
-    /// - SendAddrV2: Updates the addr_v2 state
-    /// - SendHeaders: Updates the send_headers state
-    /// - WtxidRelay: Updates the wtxid_relay state
-    /// - Ping: Automatically responds with a Pong
     pub async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
-        let message = self.transport.receive(&mut self.reader).await?;
-
-        // Handle protocol-level messages that affect connection state
-        match &message {
-            NetworkMessage::SendAddrV2 => {
-                self.state.addr_v2 = self.state.addr_v2.on_receive();
-                debug!(
-                    "Received SendAddrV2 message, addrv2_state: {:?}",
-                    self.state.addr_v2
-                );
-            }
-            NetworkMessage::SendHeaders => {
-                self.state.send_headers = self.state.send_headers.on_receive();
-                debug!(
-                    "Received SendHeaders message, send_headers_state: {:?}",
-                    self.state.send_headers
-                );
-            }
-            NetworkMessage::WtxidRelay => {
-                self.state.wtxid_relay = self.state.wtxid_relay.on_receive();
-                debug!(
-                    "Received WtxidRelay message, wtxid_relay_state: {:?}",
-                    self.state.wtxid_relay
-                );
-            }
-            NetworkMessage::Ping(nonce) => {
-                // Automatically respond to pings with pongs.
-                self.send(NetworkMessage::Pong(*nonce)).await?;
-                debug!("Responded to ping with pong, nonce: {}", nonce);
-            }
-            _ => {}
-        }
-
-        Ok(message)
+        MessageReceiver::receive(self).await
     }
 
     /// Creates a bitcoin version message for the connected peer.
@@ -669,7 +747,60 @@ where
     }
 }
 
-impl TcpConnection {
+impl<R, W> MessageSender for PeerConnection<R, W>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        self.transport.send(message, &mut self.writer).await
+    }
+}
+
+impl<R, W> MessageReceiver for PeerConnection<R, W>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        let message = self.transport.receive(&mut self.reader).await?;
+
+        // Handle protocol-level messages that affect connection state.
+        match &message {
+            NetworkMessage::SendAddrV2 => {
+                self.state.addr_v2 = self.state.addr_v2.on_receive();
+                debug!(
+                    "Received SendAddrV2 message, addrv2_state: {:?}",
+                    self.state.addr_v2
+                );
+            }
+            NetworkMessage::SendHeaders => {
+                self.state.send_headers = self.state.send_headers.on_receive();
+                debug!(
+                    "Received SendHeaders message, send_headers_state: {:?}",
+                    self.state.send_headers
+                );
+            }
+            NetworkMessage::WtxidRelay => {
+                self.state.wtxid_relay = self.state.wtxid_relay.on_receive();
+                debug!(
+                    "Received WtxidRelay message, wtxid_relay_state: {:?}",
+                    self.state.wtxid_relay
+                );
+            }
+            NetworkMessage::Ping(nonce) => {
+                // Automatically respond to pings with pongs.
+                self.send(NetworkMessage::Pong(*nonce)).await?;
+                debug!("Responded to ping with pong, nonce: {}", nonce);
+            }
+            _ => {}
+        }
+
+        Ok(message)
+    }
+}
+
+impl TcpPeerConnection {
     /// Establish a TCP connection to a bitcoin peer and perform the handshake.
     ///
     /// This method establishes the TCP connection and performs the protocol handshake,
@@ -683,9 +814,9 @@ impl TcpConnection {
     ///
     /// # Returns
     ///
-    /// * `Ok(`[`TcpConnection`]`)` - A successfully established and handshaked connection
+    /// * `Ok(`[`TcpPeerConnection`]`)` - A successfully established and handshaked connection
     /// * `Err(`[`ConnectionError`]`)` - If the connection attempt or handshake failed
-    pub async fn tcp(
+    async fn tcp(
         peer: Peer,
         network: Network,
         configuration: ConnectionConfiguration,
@@ -725,7 +856,7 @@ impl TcpConnection {
             Err(_) => return Err(ConnectionError::TransportFailed),
         };
 
-        let mut conn = Connection {
+        let mut conn = PeerConnection {
             configuration,
             state: ConnectionState::new(),
             transport,
