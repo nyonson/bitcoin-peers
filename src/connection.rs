@@ -1,6 +1,50 @@
 //! Bitcoin p2p protocol connection.
 //!
-//! See more [p2p documenation](https://developer.bitcoin.org/reference/p2p_networking.html) on the p2p protocol.
+//! This module provides connection handling for the Bitcoin peer-to-peer network.
+//! It implements the bitcoin p2p protocol, including version handshake, message
+//! serialization/deserialization, and protocol-level behaviors like automatic
+//! ping-pong responses.
+//!
+//! # Examples
+//!
+//! Creating a TCP connection to a Bitcoin peer:
+//!
+//! ```rust,no_run
+//! use bitcoin::Network;
+//! use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+//! use bitcoin::p2p::address::AddrV2;
+//! use bitcoin::p2p::message::NetworkMessage;
+//! use std::net::Ipv4Addr;
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let peer = Peer::new(
+//!     AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)),
+//!     8333, // Standard Bitcoin port
+//! );
+//!
+//! // Configure the connection as non-connectable (appropriate for light client software).
+//! // Set the required protocol version and use the default user agent.
+//! let config = ConnectionConfiguration::non_connectable(
+//!     PeerProtocolVersion::Known(70016),
+//!     None,
+//! );
+//!
+//! // Establish the connection with automatic handshake.
+//! let mut connection = Connection::tcp(peer, Network::Bitcoin, config).await?;
+//!
+//! // Send a getaddr message to request peer addresses
+//! connection.send(NetworkMessage::GetAddr).await?;
+//!
+//! // Receive a response
+//! let response = connection.receive().await?;
+//! println!("Received: {:?}", response);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The [`Connection`] type is the recommended high-level API for most applications.
+//!
+//! See more [lower level documentation](https://developer.bitcoin.org/reference/p2p_networking.html) on the bitcoin p2p protocol.
 
 use crate::peer::{
     Peer, PeerProtocolVersion, PeerServices, ADDRV2_MIN_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
@@ -867,5 +911,189 @@ impl TcpPeerConnection {
 
         conn.version_handshake().await?;
         Ok(conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoin::consensus::encode;
+    use bitcoin::p2p::message::NetworkMessage;
+    use bitcoin::p2p::message_network::VersionMessage;
+    use tokio_test::io::Builder as MockIoBuilder;
+
+    #[tokio::test]
+    async fn test_peer_connection_receive_message() {
+        let pong_message = NetworkMessage::Pong(42);
+        let raw_msg = bitcoin::p2p::message::RawNetworkMessage::new(
+            bitcoin::p2p::Magic::BITCOIN,
+            pong_message.clone(),
+        );
+        let message_bytes = encode::serialize(&raw_msg);
+
+        let mock_reader = MockIoBuilder::new().read(&message_bytes).build();
+        let mock_writer = Vec::new();
+
+        let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+
+        let config =
+            ConnectionConfiguration::non_connectable(PeerProtocolVersion::Known(70016), None);
+
+        let mut connection = PeerConnection {
+            configuration: config,
+            state: ConnectionState::new(),
+            peer,
+            transport: Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN)),
+            reader: mock_reader,
+            writer: mock_writer,
+        };
+
+        let received = connection.receive().await.unwrap();
+
+        match received {
+            NetworkMessage::Pong(nonce) => assert_eq!(nonce, 42),
+            _ => panic!("Expected Pong message, got {:?}", received),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_peer_connection_auto_respond_to_ping() {
+        // Test that the connection automatically responds to ping messages with pong.
+
+        let ping_message = NetworkMessage::Ping(123);
+        let ping_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, ping_message);
+
+        let mock_reader = MockIoBuilder::new().read(&ping_bytes).build();
+        let mock_writer = Vec::new();
+
+        let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+
+        let config =
+            ConnectionConfiguration::non_connectable(PeerProtocolVersion::Known(70016), None);
+
+        let mut connection = PeerConnection {
+            configuration: config,
+            state: ConnectionState::new(),
+            peer,
+            transport: Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN)),
+            reader: mock_reader,
+            writer: mock_writer,
+        };
+
+        let received = connection.receive().await.unwrap();
+
+        match received {
+            NetworkMessage::Ping(nonce) => assert_eq!(nonce, 123),
+            _ => panic!("Expected Ping message, got {:?}", received),
+        }
+
+        let writer = connection.writer;
+        assert!(
+            !writer.is_empty(),
+            "Expected writer to contain a pong response"
+        );
+
+        let expected_pong = NetworkMessage::Pong(123);
+        let expected_pong_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, expected_pong);
+        assert_eq!(
+            writer, expected_pong_bytes,
+            "Writer doesn't contain expected pong message"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_peer_connection_version_handshake() {
+        // This test simulates a full version handshake with a peer
+
+        // 1. Create mock I/O that will respond appropriately to our handshake messages
+        // First the peer will respond to our version message with their version and verack
+        let peer_version = create_version_message(70016, ServiceFlags::NETWORK);
+        let peer_version_bytes =
+            create_raw_message(bitcoin::p2p::Magic::BITCOIN, peer_version.clone());
+
+        // Then we expect to see the verack from the peer
+        let peer_verack = NetworkMessage::Verack;
+        let peer_verack_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, peer_verack);
+
+        // Set up mock reader that will return the peer's responses in sequence
+        let mock_reader = MockIoBuilder::new()
+            .read(&peer_version_bytes) // First they send version
+            .read(&peer_verack_bytes) // Then they send verack
+            .build();
+
+        // Mock writer will capture our outgoing messages
+        let mock_writer = Vec::new();
+
+        // 2. Set up peer connection with mocked I/O
+        let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+
+        let config =
+            ConnectionConfiguration::non_connectable(PeerProtocolVersion::Known(70016), None);
+
+        let mut connection = PeerConnection {
+            configuration: config,
+            state: ConnectionState::new(),
+            peer: peer.clone(),
+            transport: Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN)),
+            reader: mock_reader,
+            writer: mock_writer,
+        };
+
+        // 3. Perform the handshake
+        connection.version_handshake().await.unwrap();
+
+        // 4. Verify peer information was updated
+        match connection.peer.services {
+            PeerServices::Known(services) => {
+                assert_eq!(services, ServiceFlags::NETWORK);
+            }
+            _ => panic!("Expected known services"),
+        }
+
+        match connection.peer.version {
+            PeerProtocolVersion::Known(version) => {
+                assert_eq!(version, 70016);
+            }
+            _ => panic!("Expected known version"),
+        }
+
+        // 5. Verify connection state was updated with correct effective version
+        match connection.state.effective_protocol_version {
+            PeerProtocolVersion::Known(version) => {
+                assert_eq!(version, 70016);
+            }
+            _ => panic!("Expected known effective version"),
+        }
+    }
+
+    // Helper functions for creating test messages.
+
+    fn create_version_message(version: u32, services: ServiceFlags) -> NetworkMessage {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs() as i64;
+
+        let sender_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+        let receiver_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), 8333);
+
+        let version_msg = VersionMessage {
+            version,
+            services,
+            timestamp,
+            receiver: Address::new(&receiver_addr, ServiceFlags::NONE),
+            sender: Address::new(&sender_addr, services),
+            nonce: 42,
+            user_agent: "/bitcoin-core:23.0/".to_string(),
+            start_height: 0,
+            relay: true,
+        };
+
+        NetworkMessage::Version(version_msg)
+    }
+
+    fn create_raw_message(magic: bitcoin::p2p::Magic, message: NetworkMessage) -> Vec<u8> {
+        let raw_msg = bitcoin::p2p::message::RawNetworkMessage::new(magic, message);
+        encode::serialize(&raw_msg)
     }
 }
