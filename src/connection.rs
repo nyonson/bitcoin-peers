@@ -2,7 +2,10 @@
 //!
 //! See more [p2p documenation](https://developer.bitcoin.org/reference/p2p_networking.html) on the p2p protocol.
 
-use crate::peer::{Peer, PeerProtocolVersion, PeerServices, MIN_PROTOCOL_VERSION};
+use crate::peer::{
+    Peer, PeerProtocolVersion, PeerServices, ADDRV2_MIN_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
+    SENDHEADERS_MIN_PROTOCOL_VERSION, WTXID_RELAY_MIN_PROTOCOL_VERSION,
+};
 use crate::v1::AsyncV1Transport;
 use bip324::{AsyncProtocol, Role};
 use bitcoin::p2p::address::{AddrV2, Address};
@@ -16,7 +19,7 @@ use std::fmt;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -230,16 +233,124 @@ impl ConnectionConfiguration {
     }
 }
 
+/// State of AddrV2 support negotiation for the connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddrV2State {
+    /// AddrV2 support has not been negotiated yet.
+    NotNegotiated,
+    /// We sent a SendAddrV2 message but haven't received one.
+    SentOnly,
+    /// We received a SendAddrV2 message but haven't sent one.
+    ReceivedOnly,
+    /// Both sides have exchanged SendAddrV2 messages and AddrV2 is enabled.
+    Enabled,
+}
+
+impl AddrV2State {
+    /// Update the state when we send a SendAddrV2 message.
+    fn on_send(&self) -> Self {
+        match self {
+            AddrV2State::NotNegotiated => AddrV2State::SentOnly,
+            AddrV2State::ReceivedOnly => AddrV2State::Enabled,
+            _ => *self, // Already sent, state doesn't change
+        }
+    }
+
+    /// Update the state when we receive a SendAddrV2 message.
+    fn on_receive(&self) -> Self {
+        match self {
+            AddrV2State::NotNegotiated => AddrV2State::ReceivedOnly,
+            AddrV2State::SentOnly => AddrV2State::Enabled,
+            _ => *self, // Already received, state doesn't change
+        }
+    }
+}
+
+/// State of SendHeaders support negotiation for the connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SendHeadersState {
+    /// SendHeaders support has not been negotiated yet.
+    NotNegotiated,
+    /// We sent a SendHeaders message but haven't received one.
+    SentOnly,
+    /// We received a SendHeaders message but haven't sent one.
+    ReceivedOnly,
+    /// Both sides have exchanged SendHeaders messages and header announcements are enabled.
+    Enabled,
+}
+
+impl SendHeadersState {
+    /// Update the state when we send a SendHeaders message.
+    fn on_send(&self) -> Self {
+        match self {
+            SendHeadersState::NotNegotiated => SendHeadersState::SentOnly,
+            SendHeadersState::ReceivedOnly => SendHeadersState::Enabled,
+            _ => *self, // Already sent, state doesn't change
+        }
+    }
+
+    /// Update the state when we receive a SendHeaders message.
+    fn on_receive(&self) -> Self {
+        match self {
+            SendHeadersState::NotNegotiated => SendHeadersState::ReceivedOnly,
+            SendHeadersState::SentOnly => SendHeadersState::Enabled,
+            _ => *self, // Already received, state doesn't change
+        }
+    }
+}
+
+/// State of WtxidRelay support negotiation for the connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WtxidRelayState {
+    /// WtxidRelay support has not been negotiated yet.
+    NotNegotiated,
+    /// We sent a WtxidRelay message but haven't received one.
+    SentOnly,
+    /// We received a WtxidRelay message but haven't sent one.
+    ReceivedOnly,
+    /// Both sides have exchanged WtxidRelay messages and witness tx IDs are enabled.
+    Enabled,
+}
+
+impl WtxidRelayState {
+    /// Update the state when we send a WtxidRelay message.
+    fn on_send(&self) -> Self {
+        match self {
+            WtxidRelayState::NotNegotiated => WtxidRelayState::SentOnly,
+            WtxidRelayState::ReceivedOnly => WtxidRelayState::Enabled,
+            _ => *self, // Already sent, state doesn't change
+        }
+    }
+
+    /// Update the state when we receive a WtxidRelay message.
+    fn on_receive(&self) -> Self {
+        match self {
+            WtxidRelayState::NotNegotiated => WtxidRelayState::ReceivedOnly,
+            WtxidRelayState::SentOnly => WtxidRelayState::Enabled,
+            _ => *self, // Already received, state doesn't change
+        }
+    }
+}
+
 /// Runtime state of a connection.
 struct ConnectionState {
     /// The protocol version negotiated between peers (minimum of both versions).
     effective_protocol_version: PeerProtocolVersion,
+    /// Current state of AddrV2 support negotiation.
+    addr_v2: AddrV2State,
+    /// Current state of SendHeaders support negotiation.
+    send_headers: SendHeadersState,
+    /// Current state of WtxidRelay support negotiation.
+    wtxid_relay: WtxidRelayState,
 }
 
 impl ConnectionState {
     pub fn new() -> Self {
         ConnectionState {
             effective_protocol_version: PeerProtocolVersion::Unknown,
+            addr_v2: AddrV2State::NotNegotiated,
+            send_headers: SendHeadersState::NotNegotiated,
+            wtxid_relay: WtxidRelayState::NotNegotiated,
         }
     }
 }
@@ -249,10 +360,6 @@ impl ConnectionState {
 /// This struct manages a connection to a bitcoin peer using the bitcoin p2p protocol.
 /// It handles the underlying transport, serialization, protocol management,
 /// and connection state (e.g. upgrades).
-///
-/// # Short Lived
-///
-/// Designed for short lived connections.
 ///
 /// # Trait Bounds
 ///
@@ -304,101 +411,53 @@ where
         &self.peer
     }
 
-    /// Requests peer addresses by sending a getaddr message and collects the responses.
+    /// Send a message to the peer.
+    pub async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        self.transport.send(message, &mut self.writer).await
+    }
+
+    /// Receive a message from the peer.
     ///
-    /// # Returns
-    ///
-    /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
-    /// * `Err(ConnectionError)` - If an error occurs during the exchange
-    pub async fn get_peers(&mut self) -> Result<Vec<Peer>, ConnectionError> {
-        // Send GetAddr message
-        self.transport
-            .send(NetworkMessage::GetAddr, &mut self.writer)
-            .await?;
+    /// This method handles certain protocol-level messages automatically:
+    /// - SendAddrV2: Updates the addr_v2 state
+    /// - SendHeaders: Updates the send_headers state
+    /// - WtxidRelay: Updates the wtxid_relay state
+    /// - Ping: Automatically responds with a Pong
+    pub async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        let message = self.transport.receive(&mut self.reader).await?;
 
-        debug!("Sent getaddr message to peer");
-
-        let mut received_addresses = Vec::new();
-        let mut address_count = 0;
-
-        let max_wait = Duration::from_secs(20);
-        let start_time = Instant::now();
-
-        while start_time.elapsed() < max_wait {
-            // Wait for a message with a short timeout
-            let message = match tokio::time::timeout(
-                Duration::from_secs(5),
-                self.transport.receive(&mut self.reader),
-            )
-            .await
-            {
-                Ok(Ok(message)) => message,
-                Ok(Err(_)) => return Err(ConnectionError::ProtocolFailed),
-                Err(_) => {
-                    // Timeout on reading - if we have some addresses, consider it done.
-                    if !received_addresses.is_empty() {
-                        break;
-                    }
-                    // Otherwise continue waiting for the overall timeout.
-                    continue;
-                }
-            };
-            match message {
-                NetworkMessage::Addr(addresses) => {
-                    debug!("Received {} peer addresses", addresses.len());
-                    address_count += addresses.len();
-
-                    // Process each address (tuple of timestamp and Address struct)
-                    for (_, addr) in addresses {
-                        // Extract socket address - only IPv4/IPv6 addresses can be converted
-                        if let Ok(socket_addr) = addr.socket_addr() {
-                            match socket_addr.ip() {
-                                IpAddr::V4(ipv4) => received_addresses.push(
-                                    Peer::new(AddrV2::Ipv4(ipv4), socket_addr.port())
-                                        .with_known_services(addr.services),
-                                ),
-                                IpAddr::V6(ipv6) => received_addresses.push(
-                                    Peer::new(AddrV2::Ipv6(ipv6), socket_addr.port())
-                                        .with_known_services(addr.services),
-                                ),
-                            }
-                        }
-                    }
-                }
-                NetworkMessage::AddrV2(addresses) => {
-                    debug!("Received {} peer addresses (v2 format)", addresses.len());
-                    address_count += addresses.len();
-                    for addr_msg in addresses {
-                        received_addresses.push(
-                            Peer::new(addr_msg.addr, addr_msg.port)
-                                .with_known_services(addr_msg.services),
-                        );
-                    }
-                }
-                NetworkMessage::Ping(nonce) => {
-                    // Simply respond to ping with pong and continue
-                    self.transport
-                        .send(NetworkMessage::Pong(nonce), &mut self.writer)
-                        .await?;
-                    debug!("Responded to ping with pong");
-                }
-                _ => {
-                    debug!("Received unexpected message in get_peers: {message:?}, ignoring");
-                }
+        // Handle protocol-level messages that affect connection state
+        match &message {
+            NetworkMessage::SendAddrV2 => {
+                self.state.addr_v2 = self.state.addr_v2.on_receive();
+                debug!(
+                    "Received SendAddrV2 message, addrv2_state: {:?}",
+                    self.state.addr_v2
+                );
             }
-
-            // If we've received a substantial number of addresses, we can finish early
-            if address_count >= 1000 {
-                // Configurable threshold
-                break;
+            NetworkMessage::SendHeaders => {
+                self.state.send_headers = self.state.send_headers.on_receive();
+                debug!(
+                    "Received SendHeaders message, send_headers_state: {:?}",
+                    self.state.send_headers
+                );
             }
+            NetworkMessage::WtxidRelay => {
+                self.state.wtxid_relay = self.state.wtxid_relay.on_receive();
+                debug!(
+                    "Received WtxidRelay message, wtxid_relay_state: {:?}",
+                    self.state.wtxid_relay
+                );
+            }
+            NetworkMessage::Ping(nonce) => {
+                // Automatically respond to pings with pongs.
+                self.send(NetworkMessage::Pong(*nonce)).await?;
+                debug!("Responded to ping with pong, nonce: {}", nonce);
+            }
+            _ => {}
         }
 
-        debug!(
-            "Collected {} total peer addresses",
-            received_addresses.len()
-        );
-        Ok(received_addresses)
+        Ok(message)
     }
 
     /// Creates a bitcoin version message for the connected peer.
@@ -478,8 +537,8 @@ where
     /// # Returns
     ///
     /// * `Ok(`[`ServiceFlags`]`)` - The peer's advertised service flags
-    /// * `Err(`[`CrawlerError`]`)` - If the handshake failed
-    async fn version_handshake(&mut self) -> Result<ServiceFlags, ConnectionError> {
+    /// * `Err(`[`ConnectionError`]`)` - If the handshake failed
+    async fn version_handshake(&mut self) -> Result<(), ConnectionError> {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum HandshakeState {
             // Sent version message, but haven't received anything yet.
@@ -496,17 +555,14 @@ where
         let nonce = generate_nonce();
 
         let version_message = self.create_version_message(nonce);
-        self.transport
-            .send(version_message, &mut self.writer)
-            .await?;
+        self.send(version_message).await?;
 
         debug!("Sent version message to peer");
         let mut state = HandshakeState::VersionSent;
-        let mut services = ServiceFlags::NONE;
 
         // Keep processing messages until handshake is complete.
         while state != HandshakeState::Complete {
-            let message = self.transport.receive(&mut self.reader).await?;
+            let message = self.receive().await?;
 
             match message {
                 NetworkMessage::Version(version) => {
@@ -518,15 +574,12 @@ where
                         return Err(ConnectionError::ConnectionLoop);
                     }
 
-                    // Determine if we can process this version message
                     match state {
                         HandshakeState::VersionSent | HandshakeState::VerackReceived => {
                             debug!("Received version message from peer");
-                            services = version.services;
 
-                            // Update our peer's services with what we learned.
-                            self.peer.services = PeerServices::Known(services);
-                            // Store the peer's protocol version
+                            // Update our peer with what we learned.
+                            self.peer.services = PeerServices::Known(version.services);
                             self.peer.version = PeerProtocolVersion::Known(version.version);
 
                             // Calculate and store the effective version (minimum of both) of the connection.
@@ -539,12 +592,40 @@ where
                             self.state.effective_protocol_version =
                                 PeerProtocolVersion::Known(effective);
 
-                            // Maybe send a SendAddrV2 here to upgrade the connection state.
+                            // If the effective version is high enough, send protocol negotiation messages.
 
-                            // Send verack
-                            self.transport
-                                .send(NetworkMessage::Verack, &mut self.writer)
-                                .await?;
+                            // SendAddrV2 for address format support (BIP155).
+                            if effective >= ADDRV2_MIN_PROTOCOL_VERSION {
+                                // Send SendAddrV2 message to signal we want AddrV2 format
+                                self.send(NetworkMessage::SendAddrV2).await?;
+                                self.state.addr_v2 = self.state.addr_v2.on_send();
+                                debug!(
+                                    "Sent SendAddrV2 message, addrv2_state: {:?}",
+                                    self.state.addr_v2
+                                );
+                            }
+
+                            // SendHeaders for header announcements instead of INV.
+                            if effective >= SENDHEADERS_MIN_PROTOCOL_VERSION {
+                                self.send(NetworkMessage::SendHeaders).await?;
+                                self.state.send_headers = self.state.send_headers.on_send();
+                                debug!(
+                                    "Sent SendHeaders message, send_headers_state: {:?}",
+                                    self.state.send_headers
+                                );
+                            }
+
+                            // WtxidRelay for witness transaction ID relay.
+                            if effective >= WTXID_RELAY_MIN_PROTOCOL_VERSION {
+                                self.send(NetworkMessage::WtxidRelay).await?;
+                                self.state.wtxid_relay = self.state.wtxid_relay.on_send();
+                                debug!(
+                                    "Sent WtxidRelay message, wtxid_relay_state: {:?}",
+                                    self.state.wtxid_relay
+                                );
+                            }
+
+                            self.send(NetworkMessage::Verack).await?;
                             debug!("Sent verack message to peer");
 
                             state = if state == HandshakeState::VerackReceived {
@@ -584,7 +665,7 @@ where
 
         debug!("Handshake completed successfully");
 
-        Ok(services)
+        Ok(())
     }
 }
 
@@ -603,7 +684,7 @@ impl TcpConnection {
     /// # Returns
     ///
     /// * `Ok(`[`TcpConnection`]`)` - A successfully established and handshaked connection
-    /// * `Err(`[`CrawlerError`]`)` - If the connection attempt or handshake failed
+    /// * `Err(`[`ConnectionError`]`)` - If the connection attempt or handshake failed
     pub async fn tcp(
         peer: Peer,
         network: Network,

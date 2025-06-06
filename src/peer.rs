@@ -6,6 +6,18 @@ use std::fmt;
 
 /// Minimum protocol version for basic compatibility with modern bitcoin nodes.
 pub const MIN_PROTOCOL_VERSION: u32 = 70001;
+/// Minimum protocol version that supports AddrV2 messages (BIP155).
+///
+/// Bitcoin Core implemented this in version 0.21.0 with protocol version 70016.
+pub const ADDRV2_MIN_PROTOCOL_VERSION: u32 = 70016;
+/// Minimum protocol version that supports SendHeaders.
+///
+/// Bitcoin Core implemented this in version 0.12.0 with protocol version 70012.
+pub const SENDHEADERS_MIN_PROTOCOL_VERSION: u32 = 70012;
+/// Minimum protocol version that supports WtxidRelay.
+///
+/// Bitcoin Core implemented this in version 0.21.0 with protocol version 70016.
+pub const WTXID_RELAY_MIN_PROTOCOL_VERSION: u32 = 70016;
 
 /// Represents the service state of a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

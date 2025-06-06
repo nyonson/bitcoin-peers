@@ -1,7 +1,11 @@
 use crate::connection::{Connection, ConnectionConfiguration, ConnectionError};
 use crate::peer::{Peer, PeerProtocolVersion};
+use bitcoin::p2p::address::AddrV2;
+use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
-use log::info;
+use log::{debug, info};
+use std::net::IpAddr;
+use std::time::{Duration, Instant};
 use std::{
     collections::{HashSet, VecDeque},
     fmt,
@@ -11,6 +15,7 @@ use tokio::sync::{
     mpsc::{self, Receiver},
     Mutex, Semaphore,
 };
+use tokio::time::timeout;
 
 /// The bitcoin p2p protocol version number used by this implementation.
 ///
@@ -186,6 +191,106 @@ impl CrawlerBuilder {
 }
 
 impl Crawler {
+    /// Requests peer addresses from a connected node by sending a getaddr message and collects the responses.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - A connection to a Bitcoin peer
+    /// * `max_wait` - Maximum duration to wait for responses
+    /// * `max_addresses` - Maximum number of addresses to collect before returning early
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
+    /// * `Err(ConnectionError)` - If an error occurs during the exchange
+    async fn get_peers<R, W>(
+        &self,
+        conn: &mut Connection<R, W>,
+        max_wait: Duration,
+        max_addresses: usize,
+    ) -> Result<Vec<Peer>, ConnectionError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send,
+        W: tokio::io::AsyncWrite + Unpin + Send,
+    {
+        // Send GetAddr message
+        conn.send(NetworkMessage::GetAddr).await?;
+
+        debug!("Sent getaddr message to peer");
+
+        let mut received_addresses = Vec::new();
+        let mut address_count = 0;
+        let start_time = Instant::now();
+
+        while start_time.elapsed() < max_wait {
+            // Wait for a message with a short timeout
+            let timeout_duration = std::cmp::min(
+                Duration::from_secs(5),
+                max_wait.saturating_sub(start_time.elapsed()),
+            );
+
+            let message = match timeout(timeout_duration, conn.receive()).await {
+                Ok(Ok(message)) => message,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    // Timeout on reading - if we have some addresses, consider it done.
+                    if !received_addresses.is_empty() {
+                        break;
+                    }
+                    // Otherwise continue waiting for the overall timeout.
+                    continue;
+                }
+            };
+            match message {
+                NetworkMessage::Addr(addresses) => {
+                    debug!("Received {} peer addresses", addresses.len());
+                    address_count += addresses.len();
+
+                    // Process each address (tuple of timestamp and Address struct)
+                    for (_, addr) in addresses {
+                        // Extract socket address - only IPv4/IPv6 addresses can be converted
+                        if let Ok(socket_addr) = addr.socket_addr() {
+                            match socket_addr.ip() {
+                                IpAddr::V4(ipv4) => received_addresses.push(
+                                    Peer::new(AddrV2::Ipv4(ipv4), socket_addr.port())
+                                        .with_known_services(addr.services),
+                                ),
+                                IpAddr::V6(ipv6) => received_addresses.push(
+                                    Peer::new(AddrV2::Ipv6(ipv6), socket_addr.port())
+                                        .with_known_services(addr.services),
+                                ),
+                            }
+                        }
+                    }
+                }
+                NetworkMessage::AddrV2(addresses) => {
+                    debug!("Received {} peer addresses (v2 format)", addresses.len());
+                    address_count += addresses.len();
+                    for addr_msg in addresses {
+                        received_addresses.push(
+                            Peer::new(addr_msg.addr, addr_msg.port)
+                                .with_known_services(addr_msg.services),
+                        );
+                    }
+                }
+                _ => {
+                    debug!("Received unexpected message in get_peers: {message:?}, ignoring");
+                }
+            }
+
+            // If we've received a substantial number of addresses, we can finish early
+            if address_count >= max_addresses {
+                break;
+            }
+        }
+
+        debug!(
+            "Collected {} total peer addresses",
+            received_addresses.len()
+        );
+        Ok(received_addresses)
+    }
+
     /// Crawl the bitcoin network starting from a seed peer.
     ///
     /// This method returns a channel that will receive peer messages as peers are verified.
@@ -252,7 +357,11 @@ impl CrawlSession {
             .send(CrawlerMessage::Listening(conn.peer().clone()))
             .await;
 
-        if let Ok(peers) = conn.get_peers().await {
+        if let Ok(peers) = self
+            .crawler
+            .get_peers(&mut conn, Duration::from_secs(20), 1000)
+            .await
+        {
             let untested_peers = {
                 let tested = self.crawler.tested_peers.lock().await;
                 peers
