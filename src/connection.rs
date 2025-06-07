@@ -856,8 +856,8 @@ impl TcpPeerConnection {
         )
         .await
         {
-            Ok(protocol) => Transport::V2(protocol),
-            Err(_) => return Err(ConnectionError::TransportFailed(TransportError::V2)),
+            Ok(protocol) => Transport::v2(protocol),
+            Err(_) => return Err(ConnectionError::TransportFailed(TransportError::Encryption)),
         };
 
         let mut conn = PeerConnection {
