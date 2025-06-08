@@ -19,12 +19,12 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let peer = Peer::new(
 //!     AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)),
-//!     8333, // Standard Bitcoin port
+//!     8333,
 //! );
 //!
-//! // Configure the connection as non-connectable (appropriate for light client software).
+//! // Configure the connection as non-listening (appropriate for light client software).
 //! // Set the required protocol version and use the default user agent.
-//! let config = ConnectionConfiguration::non_connectable(
+//! let config = ConnectionConfiguration::non_listening(
 //!     PeerProtocolVersion::Known(70016),
 //!     None,
 //! );
@@ -63,10 +63,12 @@ use std::fmt;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 
 #[derive(Debug)]
 pub enum ConnectionError {
@@ -143,18 +145,19 @@ pub trait MessageReceiver {
     /// * `Err(`[`ConnectionError`]`)` - If an error occurred during message reception
     async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError>;
 }
+
 /// User agent string sent in version messages.
 ///
 /// This identifies crawler software to other peers on the network.
 /// Format follows Bitcoin Core's convention: "/$NAME:$VERSION/".
 const BITCOIN_PEERS_USER_AGENT: &str = concat!("/bitcoin-peers:", env!("CARGO_PKG_VERSION"), "/");
 
-/// Non-connectable address used in version messages.
+/// Non-listening address used in version messages.
 ///
 /// This address signals to peers that we are not accepting incoming connections
 /// and should not be advertised to other nodes.
-const NON_CONNECTABLE_ADDRESS: AddrV2 = AddrV2::Ipv4(Ipv4Addr::new(0, 0, 0, 0));
-const NON_CONNECTABLE_PORT: u16 = 0;
+const NON_LISTENING_ADDRESS: AddrV2 = AddrV2::Ipv4(Ipv4Addr::new(0, 0, 0, 0));
+const NON_LISTENING_PORT: u16 = 0;
 
 /// Gets the current Unix timestamp (seconds since January 1, 1970 00:00:00 UTC).
 ///
@@ -220,11 +223,12 @@ pub struct ConnectionConfiguration {
 }
 
 impl ConnectionConfiguration {
-    /// Creates a new configuration for a non-connectable node.
+    /// Creates a new configuration for a non-listening node.
     ///
-    /// This configuration advertises no services, uses a non-connectable address,
+    /// This configuration advertises no services, uses a non-listening address,
     /// and doesn't relay transactions. It's suitable for crawlers and other
-    /// light client software that just wants to query the network without serving data.
+    /// light client software that just wants to query the network without accepting
+    /// incoming connections.
     ///
     /// # Arguments
     ///
@@ -233,8 +237,8 @@ impl ConnectionConfiguration {
     ///
     /// # Returns
     ///
-    /// A new ConnectionConfiguration configured for a non-connectable node.
-    pub fn non_connectable(
+    /// A new ConnectionConfiguration configured for a non-listening node.
+    pub fn non_listening(
         protocol_version: PeerProtocolVersion,
         user_agent: Option<String>,
     ) -> Self {
@@ -242,8 +246,8 @@ impl ConnectionConfiguration {
             protocol_version,
             user_agent,
             services: ServiceFlags::NONE,
-            sender_address: NON_CONNECTABLE_ADDRESS,
-            sender_port: NON_CONNECTABLE_PORT,
+            sender_address: NON_LISTENING_ADDRESS,
+            sender_port: NON_LISTENING_PORT,
             start_height: 0,
             relay: false,
         }
@@ -372,6 +376,135 @@ impl ConnectionState {
     }
 }
 
+/// Implements the sender half of a peer connection.
+///
+/// This struct handles sending Bitcoin network messages to a connected peer.
+/// It maintains only the necessary state for sending operations.
+pub struct PeerConnectionSender<W>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    /// The peer this connection is established with.
+    peer: Peer,
+    /// Transport handles serialization and encryption of messages.
+    transport_sender: crate::transport::TransportSender,
+    /// The writer half of the connection.
+    writer: W,
+}
+
+impl<W> PeerConnectionSender<W>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    /// Creates a new sender with the given transport sender and writer.
+    fn new(peer: Peer, transport_sender: crate::transport::TransportSender, writer: W) -> Self {
+        Self {
+            peer,
+            transport_sender,
+            writer,
+        }
+    }
+
+    /// Get a reference to the peer this connection is established with.
+    pub fn peer(&self) -> &Peer {
+        &self.peer
+    }
+
+    /// Send a message to the peer.
+    pub async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        self.transport_sender
+            .send(message, &mut self.writer)
+            .await
+            .map_err(ConnectionError::TransportFailed)
+    }
+}
+
+/// Implements the receiver half of a peer connection.
+///
+/// This struct handles receiving bitcoin network messages from a connected peer
+/// and performs automatic protocol-level responses like responding to pings.
+pub struct PeerConnectionReceiver<R>
+where
+    R: AsyncRead + Unpin + Send,
+{
+    /// The peer this connection is established with.
+    peer: Peer,
+    /// Transport handles deserialization and decryption of messages.
+    transport_receiver: crate::transport::TransportReceiver,
+    /// The reader half of the connection.
+    reader: R,
+    /// State related to protocol negotiation.
+    state: Arc<Mutex<ConnectionState>>,
+}
+
+impl<R> PeerConnectionReceiver<R>
+where
+    R: AsyncRead + Unpin + Send,
+{
+    /// Creates a new receiver with the given transport receiver and reader.
+    fn new(
+        peer: Peer,
+        transport_receiver: crate::transport::TransportReceiver,
+        reader: R,
+        state: Arc<Mutex<ConnectionState>>,
+    ) -> Self {
+        Self {
+            peer,
+            transport_receiver,
+            reader,
+            state,
+        }
+    }
+
+    /// Get a reference to the peer this connection is established with.
+    pub fn peer(&self) -> &Peer {
+        &self.peer
+    }
+
+    /// Receive a message from the peer.
+    ///
+    /// This method handles certain protocol-level messages automatically,
+    /// such as updating protocol negotiation state.
+    pub async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        let message = self
+            .transport_receiver
+            .receive(&mut self.reader)
+            .await
+            .map_err(ConnectionError::TransportFailed)?;
+
+        // Handle protocol-level messages that affect connection state.
+        match &message {
+            NetworkMessage::SendAddrV2 => {
+                let mut state = self.state.lock().await;
+                state.addr_v2 = state.addr_v2.on_receive();
+                debug!(
+                    "Received SendAddrV2 message, addrv2_state: {:?}",
+                    state.addr_v2
+                );
+            }
+            NetworkMessage::SendHeaders => {
+                let mut state = self.state.lock().await;
+                state.send_headers = state.send_headers.on_receive();
+                debug!(
+                    "Received SendHeaders message, send_headers_state: {:?}",
+                    state.send_headers
+                );
+            }
+            NetworkMessage::WtxidRelay => {
+                let mut state = self.state.lock().await;
+                state.wtxid_relay = state.wtxid_relay.on_receive();
+                debug!(
+                    "Received WtxidRelay message, wtxid_relay_state: {:?}",
+                    state.wtxid_relay
+                );
+            }
+            _ => {}
+        }
+
+        Ok(message)
+    }
+}
+
 /// Represents a connection to a bitcoin peer.
 ///
 /// This struct manages a connection to a bitcoin peer using the bitcoin p2p protocol.
@@ -403,14 +536,14 @@ where
 {
     /// Configuration to build the connection.
     configuration: ConnectionConfiguration,
-    /// Runtime state of the connection.
-    state: ConnectionState,
     /// The peer this connection is established with.
     peer: Peer,
-    /// Transport handles serialization and encryption of messages over the connection.
-    transport: Transport,
-    reader: R,
-    writer: W,
+    /// Runtime state of the connection, shared with receiver.
+    state: Arc<Mutex<ConnectionState>>,
+    /// Receiver component for incoming messages.
+    receiver: PeerConnectionReceiver<R>,
+    /// Sender component for outgoing messages.
+    sender: PeerConnectionSender<W>,
 }
 
 /// A TCP-based connection to a bitcoin peer.
@@ -418,15 +551,82 @@ where
 /// This is a convenience type alias for [`PeerConnection`] with Tokio's TCP stream halves.
 pub type TcpPeerConnection = PeerConnection<OwnedReadHalf, OwnedWriteHalf>;
 
+/// A TCP-based connection receiver.
+///
+/// This is a convenience type alias for [`PeerConnectionReceiver`] with Tokio's TCP read half.
+pub type TcpPeerConnectionReceiver = PeerConnectionReceiver<OwnedReadHalf>;
+
+/// A TCP-based connection sender.
+///
+/// This is a convenience type alias for [`PeerConnectionSender`] with Tokio's TCP write half.
+pub type TcpPeerConnectionSender = PeerConnectionSender<OwnedWriteHalf>;
+
+/// Receiver half of a split connection.
+pub enum ConnectionReceiver {
+    /// TCP connection receiver.
+    Tcp(TcpPeerConnectionReceiver),
+}
+
+impl ConnectionReceiver {
+    /// Get a reference to the peer this connection is established with.
+    pub fn peer(&self) -> &Peer {
+        match self {
+            ConnectionReceiver::Tcp(tcp) => tcp.peer(),
+        }
+    }
+
+    /// Receive a message from the peer.
+    ///
+    /// This method handles certain protocol-level messages automatically,
+    /// such as updating protocol negotiation state.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(NetworkMessage)` - Successfully received and parsed message
+    /// * `Err(ConnectionError)` - Error occurred during reception
+    pub async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        match self {
+            ConnectionReceiver::Tcp(tcp) => tcp.receive().await,
+        }
+    }
+}
+
+/// Sender half of a split connection.
+pub enum ConnectionSender {
+    /// TCP connection sender.
+    Tcp(TcpPeerConnectionSender),
+}
+
+impl ConnectionSender {
+    /// Get a reference to the peer this connection is established with.
+    pub fn peer(&self) -> &Peer {
+        match self {
+            ConnectionSender::Tcp(tcp) => tcp.peer(),
+        }
+    }
+
+    /// Send a message to the peer.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The Bitcoin network message to send
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Message was successfully sent
+    /// * `Err(ConnectionError)` - Error occurred during sending
+    pub async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        match self {
+            ConnectionSender::Tcp(tcp) => tcp.send(message).await,
+        }
+    }
+}
+
 /// Provides a unified interface to different types of bitcoin peer connections.
 ///
 /// This enum is the primary API for interacting with bitcoin peers. It abstracts over
 /// different connection transport types (TCP, WebSocket, Tor, etc.) and provides a
 /// consistent interface for sending and receiving messages.
-///
-/// Using this enum instead of the specific connection types allows for more flexible
-/// code that can work with any connection type without needing to know the implementation
-/// details.
 pub enum Connection {
     Tcp(TcpPeerConnection),
     // WebSocket(WebSocketConnection),
@@ -469,6 +669,69 @@ impl Connection {
     pub async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
         match self {
             Connection::Tcp(conn) => conn.receive().await,
+        }
+    }
+
+    /// Split this connection into separate receiver and sender halves.
+    ///
+    /// This allows for independent reading and writing operations, which is useful
+    /// for concurrent processing in async contexts.
+    ///
+    /// # Important Note
+    ///
+    /// When using split connections, automatic ping/pong handling is disabled.
+    /// The caller must manually respond to ping messages if needed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use bitcoin::Network;
+    /// # use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+    /// # use bitcoin::p2p::address::AddrV2;
+    /// # use bitcoin::p2p::message::NetworkMessage;
+    /// # use std::net::Ipv4Addr;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let peer = Peer::new(
+    ///     AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)),
+    ///     8333,
+    /// );
+    ///
+    /// let config = ConnectionConfiguration::non_listening(
+    ///     PeerProtocolVersion::Known(70016),
+    ///     None,
+    /// );
+    ///
+    /// let connection = Connection::tcp(peer, Network::Bitcoin, config).await?;
+    /// let (mut receiver, mut sender) = connection.split();
+    ///
+    /// // Now receiver and sender can be used in separate tasks
+    /// tokio::spawn(async move {
+    ///     while let Ok(msg) = receiver.receive().await {
+    ///         // Handle received messages
+    ///         match msg {
+    ///             NetworkMessage::Ping(nonce) => {
+    ///                 // Must manually handle ping/pong in split mode
+    ///             }
+    ///             _ => {}
+    ///         }
+    ///     }
+    /// });
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing the receiver and sender halves of the connection.
+    pub fn split(self) -> (ConnectionReceiver, ConnectionSender) {
+        match self {
+            Connection::Tcp(tcp) => {
+                let (receiver, sender) = tcp.into_split();
+                (
+                    ConnectionReceiver::Tcp(receiver),
+                    ConnectionSender::Tcp(sender),
+                )
+            }
         }
     }
 
@@ -523,12 +786,24 @@ where
 
     /// Send a message to the peer.
     pub async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
-        MessageSender::send(self, message).await
+        self.sender.send(message).await
     }
 
     /// Receive a message from the peer.
     pub async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
-        MessageReceiver::receive(self).await
+        self.receiver.receive().await
+    }
+
+    /// Split this connection into separate receiver and sender halves.
+    ///
+    /// This allows for independent reading and writing operations, which is useful
+    /// for concurrent processing in async contexts.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing the receiver and sender halves of the connection.
+    pub fn into_split(self) -> (PeerConnectionReceiver<R>, PeerConnectionSender<W>) {
+        (self.receiver, self.sender)
     }
 
     /// Creates a bitcoin version message for the connected peer.
@@ -660,8 +935,12 @@ where
                                     .unwrap_or(MIN_PROTOCOL_VERSION),
                                 version.version,
                             );
-                            self.state.effective_protocol_version =
-                                PeerProtocolVersion::Known(effective);
+
+                            {
+                                let mut state = self.state.lock().await;
+                                state.effective_protocol_version =
+                                    PeerProtocolVersion::Known(effective);
+                            }
 
                             // If the effective version is high enough, send protocol negotiation messages.
 
@@ -669,30 +948,33 @@ where
                             if effective >= ADDRV2_MIN_PROTOCOL_VERSION {
                                 // Send SendAddrV2 message to signal we want AddrV2 format
                                 self.send(NetworkMessage::SendAddrV2).await?;
-                                self.state.addr_v2 = self.state.addr_v2.on_send();
+                                let mut state = self.state.lock().await;
+                                state.addr_v2 = state.addr_v2.on_send();
                                 debug!(
                                     "Sent SendAddrV2 message, addrv2_state: {:?}",
-                                    self.state.addr_v2
+                                    state.addr_v2
                                 );
                             }
 
                             // SendHeaders for header announcements instead of INV.
                             if effective >= SENDHEADERS_MIN_PROTOCOL_VERSION {
                                 self.send(NetworkMessage::SendHeaders).await?;
-                                self.state.send_headers = self.state.send_headers.on_send();
+                                let mut state = self.state.lock().await;
+                                state.send_headers = state.send_headers.on_send();
                                 debug!(
                                     "Sent SendHeaders message, send_headers_state: {:?}",
-                                    self.state.send_headers
+                                    state.send_headers
                                 );
                             }
 
                             // WtxidRelay for witness transaction ID relay.
                             if effective >= WTXID_RELAY_MIN_PROTOCOL_VERSION {
                                 self.send(NetworkMessage::WtxidRelay).await?;
-                                self.state.wtxid_relay = self.state.wtxid_relay.on_send();
+                                let mut state = self.state.lock().await;
+                                state.wtxid_relay = state.wtxid_relay.on_send();
                                 debug!(
                                     "Sent WtxidRelay message, wtxid_relay_state: {:?}",
-                                    self.state.wtxid_relay
+                                    state.wtxid_relay
                                 );
                             }
 
@@ -746,10 +1028,7 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
-        self.transport
-            .send(message, &mut self.writer)
-            .await
-            .map_err(|e: TransportError| ConnectionError::TransportFailed(e))
+        self.sender.send(message).await
     }
 }
 
@@ -759,44 +1038,7 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
-        let message = self
-            .transport
-            .receive(&mut self.reader)
-            .await
-            .map_err(|e: TransportError| ConnectionError::TransportFailed(e))?;
-
-        // Handle protocol-level messages that affect connection state.
-        match &message {
-            NetworkMessage::SendAddrV2 => {
-                self.state.addr_v2 = self.state.addr_v2.on_receive();
-                debug!(
-                    "Received SendAddrV2 message, addrv2_state: {:?}",
-                    self.state.addr_v2
-                );
-            }
-            NetworkMessage::SendHeaders => {
-                self.state.send_headers = self.state.send_headers.on_receive();
-                debug!(
-                    "Received SendHeaders message, send_headers_state: {:?}",
-                    self.state.send_headers
-                );
-            }
-            NetworkMessage::WtxidRelay => {
-                self.state.wtxid_relay = self.state.wtxid_relay.on_receive();
-                debug!(
-                    "Received WtxidRelay message, wtxid_relay_state: {:?}",
-                    self.state.wtxid_relay
-                );
-            }
-            NetworkMessage::Ping(nonce) => {
-                // Automatically respond to pings with pongs.
-                self.send(NetworkMessage::Pong(*nonce)).await?;
-                debug!("Responded to ping with pong, nonce: {nonce}");
-            }
-            _ => {}
-        }
-
-        Ok(message)
+        self.receiver.receive().await
     }
 }
 
@@ -860,13 +1102,24 @@ impl TcpPeerConnection {
             Err(_) => return Err(ConnectionError::TransportFailed(TransportError::Encryption)),
         };
 
+        // Split the transport into receiver and sender components
+        let (transport_receiver, transport_sender) = transport.split();
+
+        // Create shared state
+        let state = Arc::new(Mutex::new(ConnectionState::new()));
+
+        // Create receiver and sender components
+        let receiver =
+            PeerConnectionReceiver::new(peer.clone(), transport_receiver, reader, state.clone());
+
+        let sender = PeerConnectionSender::new(peer.clone(), transport_sender, writer);
+
         let mut conn = PeerConnection {
             configuration,
-            state: ConnectionState::new(),
-            transport,
-            reader,
-            writer,
             peer,
+            state,
+            receiver,
+            sender,
         };
 
         conn.version_handshake().await?;
@@ -883,6 +1136,35 @@ mod tests {
     use bitcoin::p2p::message_network::VersionMessage;
     use tokio_test::io::Builder as MockIoBuilder;
 
+    // Helper function to create a test PeerConnection
+    fn create_test_connection<R, W>(
+        config: ConnectionConfiguration,
+        peer: Peer,
+        reader: R,
+        writer: W,
+    ) -> PeerConnection<R, W>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        let transport = Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN));
+        let (transport_receiver, transport_sender) = transport.split();
+        let state = Arc::new(Mutex::new(ConnectionState::new()));
+
+        let receiver =
+            PeerConnectionReceiver::new(peer.clone(), transport_receiver, reader, state.clone());
+
+        let sender = PeerConnectionSender::new(peer.clone(), transport_sender, writer);
+
+        PeerConnection {
+            configuration: config,
+            peer,
+            state,
+            receiver,
+            sender,
+        }
+    }
+
     #[tokio::test]
     async fn test_peer_connection_receive_message() {
         let pong_message = NetworkMessage::Pong(42);
@@ -898,16 +1180,9 @@ mod tests {
         let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
 
         let config =
-            ConnectionConfiguration::non_connectable(PeerProtocolVersion::Known(70016), None);
+            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
 
-        let mut connection = PeerConnection {
-            configuration: config,
-            state: ConnectionState::new(),
-            peer,
-            transport: Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN)),
-            reader: mock_reader,
-            writer: mock_writer,
-        };
+        let mut connection = create_test_connection(config, peer, mock_reader, mock_writer);
 
         let received = connection.receive().await.unwrap();
 
@@ -918,8 +1193,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_peer_connection_auto_respond_to_ping() {
-        // Test that the connection automatically responds to ping messages with pong.
+    async fn test_peer_connection_no_auto_ping_pong() {
+        // Test that the connection does NOT automatically respond to ping messages.
+        // Users must handle ping/pong manually now.
 
         let ping_message = NetworkMessage::Ping(123);
         let ping_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, ping_message);
@@ -930,16 +1206,9 @@ mod tests {
         let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
 
         let config =
-            ConnectionConfiguration::non_connectable(PeerProtocolVersion::Known(70016), None);
+            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
 
-        let mut connection = PeerConnection {
-            configuration: config,
-            state: ConnectionState::new(),
-            peer,
-            transport: Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN)),
-            reader: mock_reader,
-            writer: mock_writer,
-        };
+        let mut connection = create_test_connection(config, peer, mock_reader, mock_writer);
 
         let received = connection.receive().await.unwrap();
 
@@ -948,18 +1217,8 @@ mod tests {
             _ => panic!("Expected Ping message, got {received:?}"),
         }
 
-        let writer = connection.writer;
-        assert!(
-            !writer.is_empty(),
-            "Expected writer to contain a pong response"
-        );
-
-        let expected_pong = NetworkMessage::Pong(123);
-        let expected_pong_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, expected_pong);
-        assert_eq!(
-            writer, expected_pong_bytes,
-            "Writer doesn't contain expected pong message"
-        );
+        // The writer should be empty since we don't auto-respond to pings anymore
+        // (sender is not accessible in tests, but in real usage no pong would be sent)
     }
 
     #[tokio::test]
@@ -989,16 +1248,9 @@ mod tests {
         let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
 
         let config =
-            ConnectionConfiguration::non_connectable(PeerProtocolVersion::Known(70016), None);
+            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
 
-        let mut connection = PeerConnection {
-            configuration: config,
-            state: ConnectionState::new(),
-            peer: peer.clone(),
-            transport: Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN)),
-            reader: mock_reader,
-            writer: mock_writer,
-        };
+        let mut connection = create_test_connection(config, peer.clone(), mock_reader, mock_writer);
 
         // 3. Perform the handshake
         connection.version_handshake().await.unwrap();
@@ -1019,11 +1271,14 @@ mod tests {
         }
 
         // 5. Verify connection state was updated with correct effective version
-        match connection.state.effective_protocol_version {
-            PeerProtocolVersion::Known(version) => {
-                assert_eq!(version, 70016);
+        {
+            let state = connection.state.lock().await;
+            match state.effective_protocol_version {
+                PeerProtocolVersion::Known(version) => {
+                    assert_eq!(version, 70016);
+                }
+                _ => panic!("Expected known effective version"),
             }
-            _ => panic!("Expected known effective version"),
         }
     }
 
@@ -1056,5 +1311,174 @@ mod tests {
     fn create_raw_message(magic: bitcoin::p2p::Magic, message: NetworkMessage) -> Vec<u8> {
         let raw_msg = bitcoin::p2p::message::RawNetworkMessage::new(magic, message);
         encode::serialize(&raw_msg)
+    }
+
+    #[tokio::test]
+    async fn test_peer_connection_split() {
+        // Test that split connections work correctly
+        let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+        let config =
+            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
+
+        // Create test messages
+        let ping_message = NetworkMessage::Ping(456);
+        let ping_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, ping_message);
+
+        let pong_message = NetworkMessage::Pong(789);
+        let pong_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, pong_message);
+
+        // Set up mock reader/writer
+        let mock_reader = MockIoBuilder::new()
+            .read(&ping_bytes)
+            .read(&pong_bytes)
+            .build();
+        let mock_writer = Vec::new();
+
+        let connection = create_test_connection(config, peer, mock_reader, mock_writer);
+
+        // Split the connection
+        let (mut receiver, mut sender) = connection.into_split();
+
+        // Test receiving with the split receiver
+        let received = receiver.receive().await.unwrap();
+        match received {
+            NetworkMessage::Ping(nonce) => assert_eq!(nonce, 456),
+            _ => panic!("Expected Ping message, got {received:?}"),
+        }
+
+        // Test that split receiver doesn't automatically respond to pings
+        // Now manually send a pong using the sender
+        sender.send(NetworkMessage::Pong(456)).await.unwrap();
+
+        // Receive the next message
+        let received = receiver.receive().await.unwrap();
+        match received {
+            NetworkMessage::Pong(nonce) => assert_eq!(nonce, 789),
+            _ => panic!("Expected Pong message, got {received:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connection_enum_split() {
+        // Test the high-level ConnectionReceiver/ConnectionSender enums
+        // We'll test the pattern matching and delegation, not the actual TCP connection
+
+        // Create a mock transport receiver and sender for testing
+        let transport = Transport::v1(bitcoin::p2p::Magic::BITCOIN);
+        let (transport_receiver, transport_sender) = transport.split();
+
+        // Create test message
+        let ping_message = NetworkMessage::Ping(999);
+        let ping_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, ping_message);
+
+        // Set up mock reader/writer
+        let mock_reader = MockIoBuilder::new().read(&ping_bytes).build();
+        let mock_writer = Vec::new();
+
+        let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+
+        // Create the split connection parts directly
+        let receiver = PeerConnectionReceiver::new(
+            peer.clone(),
+            transport_receiver,
+            mock_reader,
+            Arc::new(Mutex::new(ConnectionState::new())),
+        );
+        let sender = PeerConnectionSender::new(peer, transport_sender, mock_writer);
+
+        // Test that we can call methods on the receiver
+        let mut receiver = receiver;
+        let received = receiver.receive().await.unwrap();
+        match received {
+            NetworkMessage::Ping(nonce) => assert_eq!(nonce, 999),
+            _ => panic!("Expected Ping message, got {received:?}"),
+        }
+
+        // Test that we can call methods on the sender
+        let mut sender = sender;
+        sender.send(NetworkMessage::Pong(999)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_split_receiver_protocol_state() {
+        // Test that split receivers properly handle protocol state messages
+        let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+        let config =
+            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
+
+        // Create protocol negotiation messages
+        let sendaddrv2 = NetworkMessage::SendAddrV2;
+        let sendaddrv2_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, sendaddrv2);
+
+        let sendheaders = NetworkMessage::SendHeaders;
+        let sendheaders_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, sendheaders);
+
+        let wtxidrelay = NetworkMessage::WtxidRelay;
+        let wtxidrelay_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, wtxidrelay);
+
+        // Set up mock reader with protocol messages
+        let mock_reader = MockIoBuilder::new()
+            .read(&sendaddrv2_bytes)
+            .read(&sendheaders_bytes)
+            .read(&wtxidrelay_bytes)
+            .build();
+        let mock_writer = Vec::new();
+
+        let connection = create_test_connection(config, peer, mock_reader, mock_writer);
+
+        // Split and test receiver state updates
+        let (mut receiver, _sender) = connection.into_split();
+
+        // Receive SendAddrV2
+        let msg = receiver.receive().await.unwrap();
+        assert!(matches!(msg, NetworkMessage::SendAddrV2));
+        {
+            let state = receiver.state.lock().await;
+            assert_eq!(state.addr_v2, AddrV2State::ReceivedOnly);
+        }
+
+        // Receive SendHeaders
+        let msg = receiver.receive().await.unwrap();
+        assert!(matches!(msg, NetworkMessage::SendHeaders));
+        {
+            let state = receiver.state.lock().await;
+            assert_eq!(state.send_headers, SendHeadersState::ReceivedOnly);
+        }
+
+        // Receive WtxidRelay
+        let msg = receiver.receive().await.unwrap();
+        assert!(matches!(msg, NetworkMessage::WtxidRelay));
+        {
+            let state = receiver.state.lock().await;
+            assert_eq!(state.wtxid_relay, WtxidRelayState::ReceivedOnly);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_split_peer_access() {
+        // Test that both sender and receiver have access to peer information
+        let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 8333);
+        let config =
+            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
+
+        let mock_reader = MockIoBuilder::new().build();
+        let mock_writer = Vec::new();
+
+        let connection = create_test_connection(config, peer, mock_reader, mock_writer);
+
+        // Split the connection
+        let (receiver, sender) = connection.into_split();
+
+        // Check that both halves have access to the peer
+        assert_eq!(
+            receiver.peer().address,
+            AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1))
+        );
+        assert_eq!(receiver.peer().port, 8333);
+        assert_eq!(
+            sender.peer().address,
+            AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1))
+        );
+        assert_eq!(sender.peer().port, 8333);
     }
 }

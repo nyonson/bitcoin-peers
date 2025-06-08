@@ -332,7 +332,7 @@ impl CrawlSession {
         let mut conn = match Connection::tcp(
             peer.clone(),
             self.crawler.network,
-            ConnectionConfiguration::non_connectable(
+            ConnectionConfiguration::non_listening(
                 PROTOCOL_VERSION,
                 self.crawler.user_agent.clone(),
             ),

@@ -28,12 +28,20 @@ _test-min-versions:
   rm -f Cargo.lock
   cargo +nightly check --all-features -Z direct-minimal-versions
 
+# Try an example: split_connection, crawler.
+try example ip port="8333" log="info":
+  just _try-{{example}} {{ip}} {{port}} {{log}}
+
+# Run the crawler example with given seed node.
+_try-crawler ip port="8333" log="info":
+    cargo run --example crawler -- --address {{ip}} --port {{port}} --log-level {{log}}
+ 
+# Run the split conncetion example to the given address.
+_try-split_connection ip port="8333" log="info":
+    cargo run --example split_connection -- --address {{ip}} --port {{port}} --log-level {{log}}
+ 
 # Add a release tag and publish to the remote. Need write privileges on the repository.
 tag version remote="upstream":
   echo "Adding release tag {{version}} and pushing to {{remote}}..."
   git tag -a {{version}} -m "Release {{version}}"
   git push {{remote}} {{version}}
-
-# Run the crawler example with given seed node.
-crawl ip port="8333" log="info":
-    cargo run --example crawler -- --address {{ip}} --port {{port}} --log-level {{log}}
