@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .unwrap();
 
-    info!("PING AND PONGS");
+    info!("PINGS AND PONGS");
     info!("Network: {network}");
 
     let ip_addr = args

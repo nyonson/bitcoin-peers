@@ -1135,7 +1135,7 @@ impl TcpPeerConnection {
         };
 
         // Split the transport into receiver and sender components
-        let (transport_receiver, transport_sender) = transport.split();
+        let (transport_receiver, transport_sender) = transport.into_split();
 
         // Create shared state
         let state = Arc::new(Mutex::new(ConnectionState::new()));
@@ -1180,7 +1180,7 @@ mod tests {
         W: AsyncWrite + Unpin + Send,
     {
         let transport = Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN));
-        let (transport_receiver, transport_sender) = transport.split();
+        let (transport_receiver, transport_sender) = transport.into_split();
         let state = Arc::new(Mutex::new(ConnectionState::new()));
 
         let receiver =
@@ -1397,7 +1397,7 @@ mod tests {
 
         // Create a mock transport receiver and sender for testing
         let transport = Transport::v1(bitcoin::p2p::Magic::BITCOIN);
-        let (transport_receiver, transport_sender) = transport.split();
+        let (transport_receiver, transport_sender) = transport.into_split();
 
         // Create test message
         let ping_message = NetworkMessage::Ping(999);
