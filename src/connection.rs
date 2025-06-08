@@ -419,6 +419,15 @@ where
     }
 }
 
+impl<W> MessageSender for PeerConnectionSender<W>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        self.send(message).await
+    }
+}
+
 /// Implements the receiver half of a peer connection.
 ///
 /// This struct handles receiving bitcoin network messages from a connected peer
@@ -502,6 +511,15 @@ where
         }
 
         Ok(message)
+    }
+}
+
+impl<R> MessageReceiver for PeerConnectionReceiver<R>
+where
+    R: AsyncRead + Unpin + Send,
+{
+    async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        self.receive().await
     }
 }
 
@@ -591,6 +609,12 @@ impl ConnectionReceiver {
     }
 }
 
+impl MessageReceiver for ConnectionReceiver {
+    async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        self.receive().await
+    }
+}
+
 /// Sender half of a split connection.
 pub enum ConnectionSender {
     /// TCP connection sender.
@@ -619,6 +643,12 @@ impl ConnectionSender {
         match self {
             ConnectionSender::Tcp(tcp) => tcp.send(message).await,
         }
+    }
+}
+
+impl MessageSender for ConnectionSender {
+    async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        self.send(message).await
     }
 }
 
@@ -1480,5 +1510,74 @@ mod tests {
             AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1))
         );
         assert_eq!(sender.peer().port, 8333);
+    }
+
+    #[tokio::test]
+    async fn test_message_traits_on_split_types() {
+        // Test that MessageSender and MessageReceiver traits work on split types
+        let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+        let config =
+            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
+
+        // Create test messages
+        let ping_message = NetworkMessage::Ping(123);
+        let ping_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, ping_message);
+
+        // Set up mock reader/writer
+        let mock_reader = MockIoBuilder::new().read(&ping_bytes).build();
+        let mock_writer = Vec::new();
+
+        let connection = create_test_connection(config, peer, mock_reader, mock_writer);
+
+        // Split the connection
+        let (mut receiver, mut sender) = connection.into_split();
+
+        // Test that we can use the trait methods through the trait
+        // This verifies the trait is implemented correctly
+        async fn test_receiver_trait<R: MessageReceiver>(receiver: &mut R) -> NetworkMessage {
+            receiver.receive().await.unwrap()
+        }
+
+        async fn test_sender_trait<S: MessageSender>(
+            sender: &mut S,
+            msg: NetworkMessage,
+        ) -> Result<(), ConnectionError> {
+            sender.send(msg).await
+        }
+
+        // Test receiving through the trait
+        let received = test_receiver_trait(&mut receiver).await;
+        match received {
+            NetworkMessage::Ping(nonce) => assert_eq!(nonce, 123),
+            _ => panic!("Expected Ping message, got {received:?}"),
+        }
+
+        // Test sending through the trait
+        test_sender_trait(&mut sender, NetworkMessage::Pong(123))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_message_traits_on_enum_types() {
+        // Test that MessageSender and MessageReceiver traits work on enum types
+        // We'll test this by verifying the trait bounds are satisfied
+
+        // This function accepts any type that implements MessageReceiver
+        async fn accepts_message_receiver<R: MessageReceiver>(_receiver: R) {}
+
+        // This function accepts any type that implements MessageSender
+        async fn accepts_message_sender<S: MessageSender>(_sender: S) {}
+
+        // Create dummy enum instances to test trait implementation
+        // Note: We can't easily create real instances in tests due to the TCP types,
+        // but we can verify the traits are implemented at compile time
+
+        // The fact that this compiles proves the traits are implemented
+        fn _test_compile_time_verification() {
+            // These would be the actual types used at runtime
+            let _: fn(ConnectionReceiver) -> _ = accepts_message_receiver;
+            let _: fn(ConnectionSender) -> _ = accepts_message_sender;
+        }
     }
 }
