@@ -40,8 +40,16 @@ _try-crawler ip port="8333" log="info":
 _try-split_connection ip port="8333" log="info":
     cargo run --example split_connection -- --address {{ip}} --port {{port}} --log-level {{log}}
  
-# Add a release tag and publish to the remote. Need write privileges on the repository.
-tag version remote="upstream":
-  echo "Adding release tag {{version}} and pushing to {{remote}}..."
-  git tag -a {{version}} -m "Release {{version}}"
-  git push {{remote}} {{version}}
+# Publish a new version. Requires write privileges on upsream repository and crates.io.
+publish version remote="upstream":
+  @if ! git diff --quiet || ! git diff --cached --quiet; then \
+    echo "publish: Uncommitted changes"; exit 1; fi
+  @if [ "$$(git rev-parse --abbrev-ref HEAD)" != "master" ]; then \
+    echo "publish: Not on master branch"; exit 1; fi
+  @if ! grep -q "## v$(VERSION)" CHANGELOG.md; then \
+    echo "publish: CHANGELOG.md entry missing $(VERSION)"; exit 1; fi
+  @if ! grep -q '^version = "$(VERSION)"' Cargo.toml; then \
+    echo "Error: Cargo.toml version mismatch"; exit 1; fi
+  @echo "Adding release tag {{version}} and pushing to {{remote}}..."
+  @git tag -a {{version}} -m "Release {{version}}"
+  @git push {{remote}} {{version}}
