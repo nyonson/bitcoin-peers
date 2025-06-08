@@ -132,6 +132,7 @@ pub trait MessageSender {
     /// # Returns
     ///
     /// A `Result` indicating success or the specific error that occurred.
+    #[allow(dead_code)]
     async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError>;
 }
 
@@ -143,6 +144,7 @@ pub trait MessageReceiver {
     ///
     /// * `Ok(`[`NetworkMessage`]`)` - The received message
     /// * `Err(`[`ConnectionError`]`)` - If an error occurred during message reception
+    #[allow(dead_code)]
     async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError>;
 }
 
@@ -1556,28 +1558,5 @@ mod tests {
         test_sender_trait(&mut sender, NetworkMessage::Pong(123))
             .await
             .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_message_traits_on_enum_types() {
-        // Test that MessageSender and MessageReceiver traits work on enum types
-        // We'll test this by verifying the trait bounds are satisfied
-
-        // This function accepts any type that implements MessageReceiver
-        async fn accepts_message_receiver<R: MessageReceiver>(_receiver: R) {}
-
-        // This function accepts any type that implements MessageSender
-        async fn accepts_message_sender<S: MessageSender>(_sender: S) {}
-
-        // Create dummy enum instances to test trait implementation
-        // Note: We can't easily create real instances in tests due to the TCP types,
-        // but we can verify the traits are implemented at compile time
-
-        // The fact that this compiles proves the traits are implemented
-        fn _test_compile_time_verification() {
-            // These would be the actual types used at runtime
-            let _: fn(ConnectionReceiver) -> _ = accepts_message_receiver;
-            let _: fn(ConnectionSender) -> _ = accepts_message_sender;
-        }
     }
 }

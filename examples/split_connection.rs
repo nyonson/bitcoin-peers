@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap();
 
     info!("PING AND PONGS");
-    info!("Network: {}", network);
+    info!("Network: {network}");
 
     let ip_addr = args
         .address
@@ -106,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             conn
         }
         Err(e) => {
-            error!("Failed to connect: {}", e);
+            error!("Failed to connect: {e}");
             return Ok(());
         }
     };
@@ -139,22 +139,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(msg) => match msg {
                             NetworkMessage::Ping(nonce) => {
                                 // Received a Ping from peer, tell the send task to Pong them.
-                                info!("Received Ping with nonce: {}", nonce);
+                                info!("Received Ping with nonce: {nonce}");
                                 if let Err(e) = ping_tx.send(nonce).await {
-                                    error!("Failed to send ping nonce to sender task: {}", e);
+                                    error!("Failed to send ping nonce to sender task: {e}");
                                     break;
                                 }
                             }
                             NetworkMessage::Pong(nonce) => {
                                 // Received a Pong response from our Ping.
-                                info!("Received Pong with nonce: {}", nonce);
+                                info!("Received Pong with nonce: {nonce}");
                             }
                             _ => {
-                                debug!("Received message: {:?}", msg);
+                                debug!("Received message: {msg:?}");
                             }
                         },
                         Err(e) => {
-                            error!("Error receiving message: {}", e);
+                            error!("Error receiving message: {e}");
                             break;
                         }
                     }
@@ -186,20 +186,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Handle incoming ping requests that need pong responses.
                 Some(ping_nonce) = ping_rx.recv() => {
                     if let Err(e) = sender.send(NetworkMessage::Pong(ping_nonce)).await {
-                        error!("Failed to send Pong: {}", e);
+                        error!("Failed to send Pong: {e}");
                         break;
                     }
-                    info!("Sent Pong response with nonce: {}", ping_nonce);
+                    info!("Sent Pong response with nonce: {ping_nonce}");
                 }
                 // Send periodic pings.
                 _ = ping_interval.tick() => {
                     // Send a ping
                     if let Err(e) = sender.send(NetworkMessage::Ping(nonce)).await {
-                        error!("Failed to send Ping: {}", e);
+                        error!("Failed to send Ping: {e}");
                         break;
                     }
                     ping_count += 1;
-                    info!("Sent Ping #{} with nonce: {}", ping_count, nonce);
+                    info!("Sent Ping #{ping_count} with nonce: {nonce}");
                     nonce = nonce.wrapping_add(1);
                 }
             }
@@ -216,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = shutdown_tx.send(());
             }
             Err(err) => {
-                error!("Unable to listen for shutdown signal: {}", err);
+                error!("Unable to listen for shutdown signal: {err}");
             }
         }
     });
@@ -224,10 +224,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (receiver_result, sender_result) = tokio::join!(receive_handle, send_handle);
 
     if let Err(e) = receiver_result {
-        error!("Receiver task panicked: {}", e);
+        error!("Receiver task panicked: {e}");
     }
     if let Err(e) = sender_result {
-        error!("Sender task panicked: {}", e);
+        error!("Sender task panicked: {e}");
     }
 
     info!("Connection closed");
