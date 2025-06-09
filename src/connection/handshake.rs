@@ -72,10 +72,7 @@ where
                 state = handle_verack_message(state);
             }
             _ => {
-                debug!(
-                    "Received unexpected message during handshake: {:?}, ignoring",
-                    message
-                );
+                debug!("Received unexpected message during handshake: {message:?}, ignoring");
             }
         }
     }
@@ -176,10 +173,7 @@ where
             })
         }
         _ => {
-            debug!(
-                "Received duplicate version message in state {:?}, ignoring",
-                state
-            );
+            debug!("Received duplicate version message in state {state:?}, ignoring");
             Ok(state)
         }
     }
@@ -197,10 +191,7 @@ fn handle_verack_message(state: HandshakeState) -> HandshakeState {
             }
         }
         _ => {
-            debug!(
-                "Received duplicate verack message in state {:?}, ignoring",
-                state
-            );
+            debug!("Received duplicate verack message in state {state:?}, ignoring");
             state
         }
     }
