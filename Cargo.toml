@@ -24,3 +24,5 @@ simplelog = { version = "0.12" }
 env_logger = { version = "0.11" }
 # For I/O mocking.
 tokio-test = "0.4"
+# For integration tests with a real bitcoin node.
+corepc-node = { version = "0.8.0", default-features = false, features = ["28_1", "download"] }

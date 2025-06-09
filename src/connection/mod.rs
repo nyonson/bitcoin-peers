@@ -9,7 +9,7 @@
 //!
 //! Creating a TCP connection to a bitcoin peer:
 //!
-//! ```rust,no_run
+//! ```
 //! use bitcoin::Network;
 //! use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
 //! use bitcoin::p2p::address::AddrV2;
