@@ -30,11 +30,10 @@ enum HandshakeState {
 
 /// Performs the bitcoin p2p version handshake protocol.
 ///
-/// This includes:
-/// 1. Sending our version message
-/// 2. Receiving and validating peer's version
-/// 3. Exchanging verack messages
-/// 4. Negotiating protocol features (AddrV2, SendHeaders, WtxidRelay)
+/// 1. Send local version message.
+/// 2. Receive and validate peer's version.
+/// 3. Exchange verack messages.
+/// 4. Negotiate protocol features (AddrV2, SendHeaders, WtxidRelay).
 ///
 /// # Arguments
 ///
@@ -54,7 +53,7 @@ where
     let nonce = generate_nonce();
 
     // Send our version message
-    let version_message = create_version_message(connection, nonce);
+    let version_message = create_version_message(connection, nonce).await;
     connection.send(version_message).await?;
     debug!("Sent version message to peer");
 
@@ -82,23 +81,23 @@ where
 }
 
 /// Creates a version message for the handshake.
-fn create_version_message<R, W>(connection: &AsyncConnection<R, W>, nonce: u64) -> NetworkMessage
+async fn create_version_message<R, W>(
+    connection: &AsyncConnection<R, W>,
+    nonce: u64,
+) -> NetworkMessage
 where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
     let config = &connection.configuration;
-    let peer = &connection.peer;
+    let peer_lock = connection.peer.lock().await;
 
-    // Use known services or NONE
-    let receiver_services = match peer.services {
+    let receiver_services = match peer_lock.services {
         PeerServices::Known(flags) => flags,
         PeerServices::Unknown => ServiceFlags::NONE,
     };
 
-    // Convert addresses for version message compatibility
-    let receiver_socket_addr = address_to_socket(&peer.address, peer.port);
-
+    let receiver_socket_addr = address_to_socket(&peer_lock.address, peer_lock.port);
     let sender_socket_addr = address_to_socket(&config.sender_address, config.sender_port);
 
     let user_agent = config
@@ -132,7 +131,7 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    // Check for connection loop
+    // Check for connection loop.
     if version.nonce == our_nonce {
         error!("Connection loop detected - received same nonce");
         return Err(ConnectionError::ConnectionLoop);
@@ -142,27 +141,30 @@ where
         HandshakeState::VersionSent | HandshakeState::VerackReceived => {
             debug!("Received version message from peer");
 
-            // Update peer information
-            connection.peer.services = PeerServices::Known(version.services);
-            connection.peer.version = PeerProtocolVersion::Known(version.version);
+            // Update peer information.
+            {
+                let mut peer = connection.peer.lock().await;
+                peer.services = PeerServices::Known(version.services);
+                peer.version = PeerProtocolVersion::Known(version.version);
+            }
 
-            // Calculate effective protocol version
-            let our_version = connection
+            // Calculate effective protocol version.
+            let local_version = connection
                 .configuration
                 .protocol_version
                 .unwrap_or(MIN_PROTOCOL_VERSION);
-            let effective_version = std::cmp::min(our_version, version.version);
+            let effective_version = std::cmp::min(local_version, version.version);
 
-            // Update connection state
+            // Update connection state.
             {
                 let mut state = connection.state.lock().await;
                 state.effective_protocol_version = PeerProtocolVersion::Known(effective_version);
             }
 
-            // Send protocol negotiation messages
+            // Send protocol negotiation messages.
             send_negotiation_messages(connection, effective_version).await?;
 
-            // Send verack
+            // Send verack.
             connection.send(NetworkMessage::Verack).await?;
             debug!("Sent verack message to peer");
 
@@ -206,7 +208,7 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    // SendAddrV2 for address format support (BIP155)
+    // SendAddrV2 for address format support (BIP155).
     if effective_version >= ADDRV2_MIN_PROTOCOL_VERSION {
         connection.send(NetworkMessage::SendAddrV2).await?;
         let mut state = connection.state.lock().await;
@@ -214,7 +216,7 @@ where
         debug!("Sent SendAddrV2 message, addrv2_state: {:?}", state.addr_v2);
     }
 
-    // SendHeaders for header announcements
+    // SendHeaders for header announcements.
     if effective_version >= SENDHEADERS_MIN_PROTOCOL_VERSION {
         connection.send(NetworkMessage::SendHeaders).await?;
         let mut state = connection.state.lock().await;
@@ -225,7 +227,7 @@ where
         );
     }
 
-    // WtxidRelay for witness transaction ID relay
+    // WtxidRelay for witness transaction ID relay.
     if effective_version >= WTXID_RELAY_MIN_PROTOCOL_VERSION {
         connection.send(NetworkMessage::WtxidRelay).await?;
         let mut state = connection.state.lock().await;

@@ -132,7 +132,7 @@ impl fmt::Display for Peer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:?}:{} (services: {}, version: {})",
+            "{:?}:{} ([peer] services: {}, version: {})",
             self.address,
             self.port,
             match self.services {

@@ -28,7 +28,7 @@ _test-min-versions:
   rm -f Cargo.lock
   cargo +nightly check --all-features -Z direct-minimal-versions
 
-# Try an example: split_connection, crawler.
+# Try an example: connection, crawler.
 try example ip port="8333" log="info":
   just _try-{{example}} {{ip}} {{port}} {{log}}
 
@@ -36,9 +36,9 @@ try example ip port="8333" log="info":
 _try-crawler ip port="8333" log="info":
     cargo run --example crawler -- --address {{ip}} --port {{port}} --log-level {{log}}
  
-# Run the split conncetion example to the given address.
-_try-split_connection ip port="8333" log="info":
-    cargo run --example split_connection -- --address {{ip}} --port {{port}} --log-level {{log}}
+# Run the conncetion example to the given address.
+_try-connection ip port="8333" log="info":
+    cargo run --example connection -- --address {{ip}} --port {{port}} --log-level {{log}}
  
 # Publish a new version. Requires write privileges on upsream repository and crates.io.
 publish version remote="upstream":
@@ -49,7 +49,7 @@ publish version remote="upstream":
   @if ! grep -q "## v$(VERSION)" CHANGELOG.md; then \
     echo "publish: CHANGELOG.md entry missing $(VERSION)"; exit 1; fi
   @if ! grep -q '^version = "$(VERSION)"' Cargo.toml; then \
-    echo "Error: Cargo.toml version mismatch"; exit 1; fi
-  @echo "Adding release tag {{version}} and pushing to {{remote}}..."
+    echo "publish: Cargo.toml version mismatch"; exit 1; fi
+  @echo "publish: Adding release tag {{version}} and pushing to {{remote}}..."
   @git tag -a {{version}} -m "Release {{version}}"
   @git push {{remote}} {{version}}

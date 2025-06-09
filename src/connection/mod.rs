@@ -98,16 +98,17 @@ pub(crate) trait MessageReceiver {
 }
 
 /// Receiver half of a split connection.
+#[derive(Debug)]
 pub enum ConnectionReceiver {
     /// TCP connection receiver.
     Tcp(TcpConnectionReceiver),
 }
 
 impl ConnectionReceiver {
-    /// Get a reference to the peer this connection is established with.
-    pub fn peer(&self) -> &Peer {
+    /// Get a copy of the peer this connection is established with.
+    pub async fn peer(&self) -> Peer {
         match self {
-            ConnectionReceiver::Tcp(tcp) => tcp.peer(),
+            ConnectionReceiver::Tcp(tcp) => tcp.peer().await,
         }
     }
 
@@ -134,16 +135,17 @@ impl MessageReceiver for ConnectionReceiver {
 }
 
 /// Sender half of a split connection.
+#[derive(Debug)]
 pub enum ConnectionSender {
     /// TCP connection sender.
     Tcp(TcpConnectionSender),
 }
 
 impl ConnectionSender {
-    /// Get a reference to the peer this connection is established with.
-    pub fn peer(&self) -> &Peer {
+    /// Get a copy of the peer this connection is established with.
+    pub async fn peer(&self) -> Peer {
         match self {
-            ConnectionSender::Tcp(tcp) => tcp.peer(),
+            ConnectionSender::Tcp(tcp) => tcp.peer().await,
         }
     }
 
@@ -164,9 +166,19 @@ impl ConnectionSender {
     }
 }
 
-impl MessageSender for ConnectionSender {
-    async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
-        self.send(message).await
+impl std::fmt::Display for ConnectionReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectionReceiver::Tcp(tcp) => tcp.fmt(f),
+        }
+    }
+}
+
+impl std::fmt::Display for ConnectionSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectionSender::Tcp(tcp) => tcp.fmt(f),
+        }
     }
 }
 
@@ -175,6 +187,34 @@ impl MessageSender for ConnectionSender {
 /// This enum is the primary API for interacting with bitcoin peers. It abstracts over
 /// different connection transport types (TCP, WebSocket, Tor, etc.) and provides a
 /// consistent interface for sending and receiving messages.
+///
+/// # Trait Implementations
+///
+/// - **Display**: Provides human-readable connection information including peer address and protocol state.
+/// - **Debug**: Provides detailed debug information about the connection.
+/// - **Send**: The connection can be safely moved between threads.
+///
+/// Note that `Connection` does *not* implement `Copy` or `Clone` as it owns I/O resources
+/// that cannot be duplicated.
+///
+/// # Example
+///
+/// ```
+/// # use bitcoin::Network;
+/// # use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+/// # use bitcoin::p2p::address::AddrV2;
+/// # use std::net::Ipv4Addr;
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+/// let config = ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
+/// let connection = Connection::tcp(peer, Network::Bitcoin, config).await?;
+///
+/// // Display connection info for debugging
+/// println!("Connection: {}", connection);
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug)]
 pub enum Connection {
     Tcp(TcpConnection),
     // WebSocket(WebSocketConnection),
@@ -183,10 +223,10 @@ pub enum Connection {
 }
 
 impl Connection {
-    /// Get a reference to the peer this connection is established with.
-    pub fn peer(&self) -> &Peer {
+    /// Get a copy of the peer this connection is established with.
+    pub async fn peer(&self) -> Peer {
         match self {
-            Connection::Tcp(conn) => conn.peer(),
+            Connection::Tcp(conn) => conn.peer().await,
         }
     }
 
@@ -227,7 +267,7 @@ impl Connection {
     ///
     /// # Example
     ///
-    /// ```rust,no_run
+    /// ```
     /// # use bitcoin::Network;
     /// # use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
     /// # use bitcoin::p2p::address::AddrV2;
@@ -310,6 +350,14 @@ impl MessageSender for Connection {
 impl MessageReceiver for Connection {
     async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
         self.receive().await
+    }
+}
+
+impl std::fmt::Display for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Connection::Tcp(tcp) => tcp.fmt(f),
+        }
     }
 }
 

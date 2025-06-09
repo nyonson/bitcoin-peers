@@ -104,6 +104,7 @@ impl WtxidRelayState {
 }
 
 /// Runtime state of a connection.
+#[derive(Debug)]
 pub struct ConnectionState {
     /// The protocol version negotiated between peers (minimum of both versions).
     pub effective_protocol_version: PeerProtocolVersion,
@@ -113,6 +114,16 @@ pub struct ConnectionState {
     pub send_headers: SendHeadersState,
     /// Current state of WtxidRelay support negotiation.
     pub wtxid_relay: WtxidRelayState,
+}
+
+impl std::fmt::Display for ConnectionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[connection state] protocol: {:?}, addrv2: {:?}, headers: {:?}, wtxid: {:?}",
+            self.effective_protocol_version, self.addr_v2, self.send_headers, self.wtxid_relay
+        )
+    }
 }
 
 impl ConnectionState {

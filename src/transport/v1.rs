@@ -199,6 +199,7 @@ impl AsyncV1TransportReceiver {
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct AsyncV1Transport {
     /// The sender component.
     sender: AsyncV1TransportSender,

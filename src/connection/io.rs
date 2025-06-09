@@ -19,16 +19,37 @@ use tokio::sync::Mutex;
 ///
 /// This struct handles sending Bitcoin network messages to a connected peer.
 /// It maintains only the necessary state for sending operations.
+#[derive(Debug)]
 pub struct AsyncConnectionSender<W>
 where
     W: AsyncWrite + Unpin + Send,
 {
     /// The peer this connection is established with.
-    peer: Peer,
+    peer: Arc<Mutex<Peer>>,
     /// Transport handles serialization and encryption of messages.
     transport_sender: TransportSender,
     /// The writer half of the connection.
     writer: W,
+}
+
+impl<W> std::fmt::Display for AsyncConnectionSender<W>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let transport = match &self.transport_sender {
+            TransportSender::V1(_) => "V1",
+            TransportSender::V2(_) => "V2",
+        };
+
+        let peer_info = self
+            .peer
+            .try_lock()
+            .map(|peer| peer.to_string())
+            .unwrap_or_else(|_| "<peer locked>".to_string());
+
+        write!(f, "TCP/{transport} sender to {peer_info}")
+    }
 }
 
 impl<W> AsyncConnectionSender<W>
@@ -36,7 +57,11 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     /// Creates a new sender with the given transport sender and writer.
-    pub(super) fn new(peer: Peer, transport_sender: TransportSender, writer: W) -> Self {
+    pub(super) fn new(
+        peer: Arc<Mutex<Peer>>,
+        transport_sender: TransportSender,
+        writer: W,
+    ) -> Self {
         Self {
             peer,
             transport_sender,
@@ -44,9 +69,9 @@ where
         }
     }
 
-    /// Get a reference to the peer this connection is established with.
-    pub fn peer(&self) -> &Peer {
-        &self.peer
+    /// Get a copy of the peer this connection is established with.
+    pub async fn peer(&self) -> Peer {
+        self.peer.lock().await.clone()
     }
 
     /// Send a message to the peer.
@@ -62,12 +87,13 @@ where
 ///
 /// This struct handles receiving bitcoin network messages from a connected peer
 /// and performs automatic protocol-level responses like responding to pings.
+#[derive(Debug)]
 pub struct AsyncConnectionReceiver<R>
 where
     R: AsyncRead + Unpin + Send,
 {
     /// The peer this connection is established with.
-    peer: Peer,
+    peer: Arc<Mutex<Peer>>,
     /// Transport handles deserialization and decryption of messages.
     transport_receiver: TransportReceiver,
     /// The reader half of the connection.
@@ -76,13 +102,39 @@ where
     state: Arc<Mutex<ConnectionState>>,
 }
 
+impl<R> std::fmt::Display for AsyncConnectionReceiver<R>
+where
+    R: AsyncRead + Unpin + Send,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let transport = match &self.transport_receiver {
+            TransportReceiver::V1(_) => "V1",
+            TransportReceiver::V2(_) => "V2",
+        };
+
+        let peer_info = self
+            .peer
+            .try_lock()
+            .map(|peer| peer.to_string())
+            .unwrap_or_else(|_| "<peer locked>".to_string());
+
+        let state_info = self
+            .state
+            .try_lock()
+            .map(|state| format!(" ({state})"))
+            .unwrap_or_else(|_| " (state: <locked>)".to_string());
+
+        write!(f, "TCP/{transport} receiver to {peer_info}{state_info}")
+    }
+}
+
 impl<R> AsyncConnectionReceiver<R>
 where
     R: AsyncRead + Unpin + Send,
 {
     /// Creates a new receiver with the given transport receiver and reader.
     pub(super) fn new(
-        peer: Peer,
+        peer: Arc<Mutex<Peer>>,
         transport_receiver: TransportReceiver,
         reader: R,
         state: Arc<Mutex<ConnectionState>>,
@@ -95,9 +147,9 @@ where
         }
     }
 
-    /// Get a reference to the peer this connection is established with.
-    pub fn peer(&self) -> &Peer {
-        &self.peer
+    /// Get a copy of the peer this connection is established with.
+    pub async fn peer(&self) -> Peer {
+        self.peer.lock().await.clone()
     }
 
     /// Receive a message from the peer.
@@ -168,6 +220,7 @@ where
 /// [`Sync`]: core::marker::Sync
 /// [`Arc`]: std::sync::Arc
 /// [`Mutex`]: tokio::sync::Mutex
+#[derive(Debug)]
 pub struct AsyncConnection<R, W>
 where
     R: AsyncRead + Unpin + Send,
@@ -176,13 +229,41 @@ where
     /// Configuration to build the connection.
     pub(super) configuration: ConnectionConfiguration,
     /// The peer this connection is established with.
-    pub(super) peer: Peer,
+    pub(super) peer: Arc<Mutex<Peer>>,
     /// Runtime state of the connection, shared with receiver.
     pub(super) state: Arc<Mutex<ConnectionState>>,
     /// Receiver component for incoming messages.
     receiver: AsyncConnectionReceiver<R>,
     /// Sender component for outgoing messages.
     sender: AsyncConnectionSender<W>,
+}
+
+impl<R, W> std::fmt::Display for AsyncConnection<R, W>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Get transport version from receiver
+        let transport = match &self.receiver.transport_receiver {
+            TransportReceiver::V1(_) => "V1",
+            TransportReceiver::V2(_) => "V2",
+        };
+
+        let peer_info = self
+            .peer
+            .try_lock()
+            .map(|peer| peer.to_string())
+            .unwrap_or_else(|_| "<peer locked>".to_string());
+
+        let state_info = self
+            .state
+            .try_lock()
+            .map(|state| format!(" ({state})"))
+            .unwrap_or_else(|_| " (state: <locked>)".to_string());
+
+        write!(f, "TCP/{transport} connection to {peer_info}{state_info}")
+    }
 }
 
 impl<R, W> AsyncConnection<R, W>
@@ -200,6 +281,7 @@ where
     ) -> Self {
         let (transport_receiver, transport_sender) = transport.into_split();
         let state = Arc::new(Mutex::new(ConnectionState::new()));
+        let peer = Arc::new(Mutex::new(peer));
 
         let receiver =
             AsyncConnectionReceiver::new(peer.clone(), transport_receiver, reader, state.clone());
@@ -214,9 +296,9 @@ where
         }
     }
 
-    /// Get a reference to the peer this connection is established with.
-    pub fn peer(&self) -> &Peer {
-        &self.peer
+    /// Get a copy of the peer this connection is established with.
+    pub async fn peer(&self) -> Peer {
+        self.peer.lock().await.clone()
     }
 
     /// Send a message to the peer.

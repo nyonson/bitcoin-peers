@@ -1,8 +1,10 @@
-//! Example demonstrating split connection functionality with ping/pong.
+//! Example demonstrating Connection functionality including Display/Debug traits and split connections.
 //!
-//! This example shows how to split a connection into separate receiver and sender
-//! halves, allowing for concurrent reading and writing operations. It connects
-//! to a Bitcoin peer and demonstrates sending pings and receiving pongs.
+//! This example shows:
+//! - How to establish a Bitcoin peer connection
+//! - Using Display and Debug traits to inspect connection state
+//! - Splitting a connection into separate receiver and sender halves
+//! - Concurrent reading and writing operations with ping/pong messages
 
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
@@ -16,7 +18,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
-/// Command line arguments for the split connection example
+/// Command line arguments for the connection example
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -103,6 +105,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection = match Connection::tcp(peer, network, config).await {
         Ok(conn) => {
             info!("Successfully connected and completed handshake");
+
+            // Demonstrate Display and Debug traits
+            info!("Connection Display: {conn}");
+            debug!("Connection Debug: {conn:?}");
+
             conn
         }
         Err(e) => {
@@ -113,6 +120,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (mut receiver, mut sender) = connection.into_split();
     info!("Connection split into receiver and sender");
+
+    // Demonstrate Display for split connections
+    info!("Receiver Display: {receiver}");
+    info!("Sender Display: {sender}");
 
     // Set up shutdown signal using broadcast channel for multiple receivers
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);

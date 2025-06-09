@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// This transport provides methods to send and receive bitcoin protocol messages
 /// over any type that implements `AsyncRead` and `AsyncWrite`, using the
 /// encrypted BIP-324 protocol.
+#[derive(Debug)]
 pub struct AsyncV2Transport {
     sender: AsyncV2TransportSender,
     receiver: AsyncV2TransportReceiver,
@@ -58,6 +59,14 @@ pub struct AsyncV2TransportReceiver {
     reader: bip324::AsyncProtocolReader,
 }
 
+impl std::fmt::Debug for AsyncV2TransportReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncV2TransportReceiver")
+            .field("reader", &"<AsyncProtocolReader>")
+            .finish()
+    }
+}
+
 impl AsyncV2TransportReceiver {
     /// Creates a new receiver from a BIP-324 AsyncProtocolReader.
     pub fn new(reader: bip324::AsyncProtocolReader) -> Self {
@@ -82,6 +91,14 @@ impl AsyncV2TransportReceiver {
 /// Implements the sender half of the bitcoin V2 protocol transport.
 pub struct AsyncV2TransportSender {
     writer: bip324::AsyncProtocolWriter,
+}
+
+impl std::fmt::Debug for AsyncV2TransportSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncV2TransportSender")
+            .field("writer", &"<AsyncProtocolWriter>")
+            .finish()
+    }
 }
 
 impl AsyncV2TransportSender {

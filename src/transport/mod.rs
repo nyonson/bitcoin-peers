@@ -117,6 +117,7 @@ impl From<encode::Error> for TransportError {
 
 /// This type handles receiving Bitcoin network messages using the appropriate
 /// protocol (v1 or v2).
+#[derive(Debug)]
 pub enum TransportReceiver {
     /// V1 protocol with plaintext messages receiver.
     V1(AsyncV1TransportReceiver),
@@ -128,6 +129,7 @@ pub enum TransportReceiver {
 ///
 /// This type handles sending Bitcoin network messages using the appropriate
 /// protocol (V1 or V2).
+#[derive(Debug)]
 pub enum TransportSender {
     /// V1 protocol with plaintext messages sender.
     V1(AsyncV1TransportSender),
@@ -272,6 +274,7 @@ pub enum TransportPolicy {
 ///
 /// The high-level [`Connection`](crate::Connection) type manages transport selection
 /// automatically based on protocol negotiation.
+#[derive(Debug)]
 pub enum Transport {
     /// V1 protocol with plaintext messages.
     V1(AsyncV1Transport),

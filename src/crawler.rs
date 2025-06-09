@@ -348,9 +348,10 @@ impl CrawlSession {
 
         // The connection has been established and handshake completed.
         // Services and version are updated in the peer.
+        let peer_info = conn.peer().await;
         let _ = self
             .crawl_tx
-            .send(CrawlerMessage::Listening(conn.peer().clone()))
+            .send(CrawlerMessage::Listening(peer_info))
             .await;
 
         if let Ok(peers) = self
