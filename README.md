@@ -15,7 +15,13 @@
 
 Bitcoin Peers is a library containing general tooling for interacting with and analyzing peers of a bitcoin network. The library takes a semi-opinionated approach by requiring the use of the *tokio* asynchronous runtime. However, the library's modules are designed to compose into higher level utilities.
 
-Check out [examples](examples) for usage and [doc/DESIGN.md](docs/DESIGN.md) for the gnarly details.
+## Modules
+
+* **Connection** // High level interface which manages a connection to a bitcoin peer.
+* **Transport** // Low level interface for the encryption and serialization used in a connection.
+* **Crawler** // Crawl across the bitcoin network beginning from a seed peer.
+
+Check out [examples/](examples) for usage.
 
 ## Contributing
 

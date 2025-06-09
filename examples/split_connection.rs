@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (mut receiver, mut sender) = connection.split();
+    let (mut receiver, mut sender) = connection.into_split();
     info!("Connection split into receiver and sender");
 
     // Set up shutdown signal using broadcast channel for multiple receivers

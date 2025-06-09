@@ -211,6 +211,18 @@ impl TransportSender {
     }
 }
 
+/// Policy for transport protocol selection.
+///
+/// This enum controls how the connection handles transport protocol
+/// selection between v1 (plaintext) and v2 (encrypted).
+#[derive(Debug, Clone, Copy)]
+pub enum TransportPolicy {
+    /// V2 encrypted transport is required. Connection will fail if v2 cannot be established.
+    V2Required,
+    /// V2 encrypted transport is preferred, but will fall back to v1 if necessary.
+    V2Preferred,
+}
+
 /// Represents the transport protocol used for Bitcoin peer-to-peer communication.
 ///
 /// This enum abstracts over the different Bitcoin network protocols,
@@ -251,7 +263,7 @@ impl TransportSender {
 /// let (read_half, write_half) = stream.into_split();
 ///
 /// let transport = Transport::v1(Magic::BITCOIN);
-/// let (mut receiver, mut sender) = transport.split();
+/// let (mut receiver, mut sender) = transport.into_split();
 ///
 /// // Now receiver and sender can be used in separate tasks
 /// # Ok(())
