@@ -1,6 +1,6 @@
 //! Integration tests for the Connection module using a bitcoind process.
 //!
-//! Note: These tests require a Bitcoin node to be available. On NixOS, you may need
+//! These tests require a Bitcoin node to be available. On NixOS, you may need
 //! to use the BITCOIND_EXE environment variable to point to a NixOS-compatible bitcoind
 //! binary instead of the auto-downloaded one.
 
@@ -8,7 +8,8 @@ use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{
-    Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy,
+    Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
+    TransportPolicy,
 };
 use corepc_node as bitcoind;
 use std::net::Ipv4Addr;
@@ -17,7 +18,6 @@ use tokio::time::timeout;
 
 const NONCE: u64 = 42;
 
-/// Test transport version preference.
 enum TransportVersion {
     V1,
     V2,
@@ -53,11 +53,12 @@ async fn test_connection_v1() {
     let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), socket.port());
 
     // Configure connection to prefer V2 but fall back to V1.
-    let mut config = ConnectionConfiguration::non_listening(
+    let config = ConnectionConfiguration::non_listening(
         PeerProtocolVersion::Known(70016),
+        TransportPolicy::V2Preferred,
+        FeaturePreferences::default(),
         Some("bitcoin-peers-test".to_string()),
     );
-    config.transport_policy = TransportPolicy::V2Preferred;
 
     // Establish connection (should fall back to V1).
     let mut connection = Connection::tcp(peer, Network::Regtest, config)
@@ -97,11 +98,12 @@ async fn test_connection_v2() {
     let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), socket.port());
 
     // Configure connection to require v2.
-    let mut config = ConnectionConfiguration::non_listening(
+    let config = ConnectionConfiguration::non_listening(
         PeerProtocolVersion::Known(70016),
+        TransportPolicy::V2Required,
+        FeaturePreferences::default(),
         Some("bitcoin-peers-test".to_string()),
     );
-    config.transport_policy = TransportPolicy::V2Required;
 
     let mut connection = Connection::tcp(peer, Network::Regtest, config)
         .await
@@ -135,11 +137,12 @@ async fn test_connection_split() {
     let socket = node.params.p2p_socket.unwrap();
     let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), socket.port());
 
-    let mut config = ConnectionConfiguration::non_listening(
+    let config = ConnectionConfiguration::non_listening(
         PeerProtocolVersion::Known(70016),
+        TransportPolicy::V2Preferred,
+        FeaturePreferences::default(),
         Some("bitcoin-peers-test".to_string()),
     );
-    config.transport_policy = TransportPolicy::V2Preferred;
 
     let connection = Connection::tcp(peer, Network::Regtest, config)
         .await

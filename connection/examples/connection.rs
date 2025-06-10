@@ -8,7 +8,10 @@
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
-use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+use bitcoin_peers_connection::{
+    Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
+    TransportPolicy,
+};
 use clap::Parser;
 use log::{debug, error, info};
 use std::net::IpAddr;
@@ -103,6 +106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = ConnectionConfiguration::non_listening(
         PeerProtocolVersion::Known(args.protocol_version),
+        TransportPolicy::V2Preferred,
+        FeaturePreferences::default(),
         args.user_agent.clone(),
     );
 

@@ -88,6 +88,8 @@ impl ConnectionConfiguration {
     /// # Arguments
     ///
     /// * `protocol_version` - The protocol version to advertise. Defaults to MIN_PROTOCOL_VERSION if Unknown.
+    /// * `transport_policy` - Should v2 failures fallback to unencrypted v1 transport.
+    /// * `feature_preferences` - What features to attempt to enable on connection.
     /// * `user_agent` - Optional custom user agent string. Defaults to bitcoin-peers default if None.
     ///
     /// # Returns
@@ -95,6 +97,8 @@ impl ConnectionConfiguration {
     /// A new ConnectionConfiguration configured for a non-listening node.
     pub fn non_listening(
         protocol_version: PeerProtocolVersion,
+        transport_policy: TransportPolicy,
+        feature_preferences: FeaturePreferences,
         user_agent: Option<String>,
     ) -> Self {
         Self {
@@ -105,8 +109,8 @@ impl ConnectionConfiguration {
             sender_port: NON_LISTENING_PORT,
             start_height: 0,
             relay: false,
-            transport_policy: TransportPolicy::V2Required,
-            feature_preferences: FeaturePreferences::default(),
+            transport_policy,
+            feature_preferences,
         }
     }
 }

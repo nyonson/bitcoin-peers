@@ -4,13 +4,15 @@
 //! It covers the bitcoin p2p protocol, including version handshake, message
 //! serialization/deserialization, and feature negotiation.
 //!
+//! The [`Connection`] type is the recommended high-level API for most applications.
+//!
 //! # Examples
 //!
-//! Creating a TCP connection to a bitcoin peer:
+//! Creating a TCP connection to a bitcoin peer.
 //!
 //! ```
 //! use bitcoin::Network;
-//! use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+//! use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy, FeaturePreferences};
 //! use bitcoin::p2p::address::AddrV2;
 //! use bitcoin::p2p::message::NetworkMessage;
 //! use std::net::Ipv4Addr;
@@ -22,9 +24,10 @@
 //! );
 //!
 //! // Configure the connection as non-listening (appropriate for light client software).
-//! // Set the required protocol version and use the default user agent.
 //! let config = ConnectionConfiguration::non_listening(
 //!     PeerProtocolVersion::Known(70016),
+//!     TransportPolicy::V2Required,
+//!     FeaturePreferences::default(),
 //!     None,
 //! );
 //!
@@ -40,10 +43,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! The [`Connection`] type is the recommended high-level API for most applications.
-//!
-//! See more [lower level documentation](https://developer.bitcoin.org/reference/p2p_networking.html) on the bitcoin p2p protocol.
 
 mod configuration;
 mod error;
@@ -170,12 +169,17 @@ impl std::fmt::Display for ConnectionSender {
 ///
 /// ```
 /// # use bitcoin::Network;
-/// # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+/// # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy, FeaturePreferences};
 /// # use bitcoin::p2p::address::AddrV2;
 /// # use std::net::Ipv4Addr;
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
-/// let config = ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
+/// let config = ConnectionConfiguration::non_listening(
+///     PeerProtocolVersion::Known(70016),
+///     TransportPolicy::V2Required,
+///     FeaturePreferences::default(),
+///     None
+/// );
 /// let connection = Connection::tcp(peer, Network::Bitcoin, config).await?;
 ///
 /// // Display connection info for debugging
@@ -248,7 +252,7 @@ impl Connection {
     ///
     /// ```
     /// # use bitcoin::Network;
-    /// # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+    /// # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy, FeaturePreferences};
     /// # use bitcoin::p2p::address::AddrV2;
     /// # use bitcoin::p2p::message::NetworkMessage;
     /// # use std::net::Ipv4Addr;
@@ -260,6 +264,8 @@ impl Connection {
     ///
     /// let config = ConnectionConfiguration::non_listening(
     ///     PeerProtocolVersion::Known(70016),
+    ///     TransportPolicy::V2Required,
+    ///     FeaturePreferences::default(),
     ///     None,
     /// );
     ///
@@ -340,13 +346,15 @@ impl Connection {
     ///
     /// ```no_run
     /// use bitcoin::Network;
-    /// use bitcoin_peers_connection::{Connection, ConnectionConfiguration, PeerProtocolVersion};
+    /// use bitcoin_peers_connection::{Connection, ConnectionConfiguration, PeerProtocolVersion, TransportPolicy, FeaturePreferences};
     /// use tokio::net::TcpListener;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let listener = TcpListener::bind("127.0.0.1:8333").await?;
     /// let config = ConnectionConfiguration::non_listening(
     ///     PeerProtocolVersion::Known(70016),
+    ///     TransportPolicy::V2Required,
+    ///     FeaturePreferences::default(),
     ///     None,
     /// );
     ///
@@ -425,8 +433,12 @@ mod tests {
 
         let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
 
-        let config =
-            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
+        let config = ConnectionConfiguration::non_listening(
+            PeerProtocolVersion::Known(70016),
+            TransportPolicy::V2Preferred,
+            FeaturePreferences::default(),
+            None,
+        );
 
         let mut connection = create_test_connection(config, peer, mock_reader, mock_writer);
 
@@ -441,8 +453,12 @@ mod tests {
     #[tokio::test]
     async fn test_connection_split() {
         let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
-        let config =
-            ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
+        let config = ConnectionConfiguration::non_listening(
+            PeerProtocolVersion::Known(70016),
+            TransportPolicy::V2Preferred,
+            FeaturePreferences::default(),
+            None,
+        );
 
         let ping_message = NetworkMessage::Ping(456);
         let ping_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, ping_message);

@@ -1,7 +1,9 @@
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
-use bitcoin_peers_connection::{Connection, ConnectionConfiguration, ConnectionError};
+use bitcoin_peers_connection::{
+    Connection, ConnectionConfiguration, ConnectionError, FeaturePreferences, TransportPolicy,
+};
 use bitcoin_peers_connection::{Peer, PeerProtocolVersion};
 use log::{debug, info};
 use std::net::IpAddr;
@@ -330,6 +332,8 @@ impl CrawlSession {
             self.crawler.network,
             ConnectionConfiguration::non_listening(
                 PROTOCOL_VERSION,
+                TransportPolicy::V2Preferred,
+                FeaturePreferences::default(),
                 self.crawler.user_agent.clone(),
             ),
         )
