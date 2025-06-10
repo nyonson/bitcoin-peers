@@ -129,7 +129,7 @@ pub struct Crawler {
 /// ```
 #[derive(Debug, Clone)]
 pub struct CrawlerBuilder {
-    /// bitcoin network the crawler will operate on.
+    /// Bitcoin network the crawler will operate on.
     network: Network,
     /// Custom user agent advertised for connection.
     user_agent: Option<UserAgent>,
@@ -139,9 +139,30 @@ pub struct CrawlerBuilder {
     protocol_version: PeerProtocolVersion,
 }
 
+/// Internal coordinator for a crawling session.
+///
+/// `CrawlSession` orchestrates the crawling process by managing the work queue
+/// and coordinating concurrent peer processing tasks. It acts as the execution
+/// engine for a [`Crawler`] instance.
+///
+/// # Architecture
+///
+/// The session follows a producer-consumer pattern.
+///
+/// * **Coordinator** (`coordinate()`) - Manages the work queue and spawns processing tasks.
+/// * **Processors** (`process()`) - Handle individual peer connections and discovery.
+/// * **Communication** - Uses an MPSC channel to send results back to the caller.
+///
+/// # Concurrency Control
+///
+/// * **Semaphore** - Limits concurrent connections (default: 8 simultaneous peers).
+/// * **Shared State** - Peer queues and tested sets are protected by `Arc<Mutex<_>>`.
+/// * **Graceful Shutdown** - Monitors channel closure for early termination.
 #[derive(Clone)]
 struct CrawlSession {
+    /// Shared crawler configuration and state.
     crawler: Crawler,
+    /// Channel for sending discovery results back to the caller.
     crawl_tx: mpsc::Sender<CrawlerMessage>,
 }
 
@@ -362,7 +383,19 @@ impl Crawler {
 }
 
 impl CrawlSession {
-    /// Tests if a peer is listening and asks for the peers they know about.
+    /// Processes a single peer: tests connectivity and discovers new peers.
+    ///
+    /// # Process Flow
+    ///
+    /// 1. **Deduplication** - Checks if peer already tested, skips if so.
+    /// 2. **Connection** - Attempts connection and bitcoin handshake.
+    /// 3. **Classification** - Reports peer as `Listening` or `NonListening`.
+    /// 4. **Discovery** - If connected, requests peer addresses via `getaddr`.
+    /// 5. **Queue New Peers** - Adds untested peers to discovery queue.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer` - The peer to test and potentially discover addresses from.
     async fn process(&self, peer: Peer) {
         // Check and mark tested so we don't re-visit this session.
         {
@@ -432,7 +465,18 @@ impl CrawlSession {
         }
     }
 
-    /// Coordinate crawling across the peers.
+    /// Coordinates the crawling process by managing the work queue and task scheduling.
+    ///
+    /// This is the main control loop that orchestrates the entire crawling session.
+    /// It continuously pulls peers from the discovery queue and spawns processing tasks
+    /// until the crawl is complete or terminated.
+    ///
+    /// # Scheduling Algorithm
+    ///
+    /// * **Work Queue** - FIFO processing of discovered peers.
+    /// * **Concurrency Limit** - Semaphore restricts to concurrent connections.
+    /// * **Completion Detection** - Terminates when queue empty and no tasks running.
+    /// * **Early Termination** - Stops immediately if output channel closed.
     async fn coordinate(&self) {
         let tasks = Arc::new(Semaphore::new(8));
 
@@ -446,6 +490,7 @@ impl CrawlSession {
             let peer = self.crawler.discovered_peers.lock().await.pop_front();
             match peer {
                 Some(peer) => {
+                    // We have work to do - spawn a task to process this peer.
                     // Acquire_owned so that it can be moved into the spawned task.
                     let permit = tasks.clone().acquire_owned().await.unwrap();
                     let task = self.clone();
@@ -455,10 +500,14 @@ impl CrawlSession {
                     });
                 }
                 None => {
+                    // No peers in queue - check if we're truly done.
+                    // If all 8 permits are available, no tasks are running.
                     if tasks.available_permits() == 8 {
                         info!("Crawler exhausted");
                         break;
                     }
+                    // Otherwise, tasks are still running and may discover new peers.
+                    // Continue looping to check for new work.
                 }
             }
         }
