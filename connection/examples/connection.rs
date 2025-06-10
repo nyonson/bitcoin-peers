@@ -11,8 +11,7 @@ use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
 use clap::Parser;
-use log::{debug, error, info, LevelFilter};
-use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
+use log::{debug, error, info};
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -27,7 +26,7 @@ struct Args {
     address: String,
 
     /// Port number of the seed node.
-    #[arg(short, long, default_value_t = 8333)]
+    #[arg(short, long, default_value = "8333")]
     port: u16,
 
     /// Network to use (bitcoin (mainnet), testnet, regtest, signet)
@@ -35,7 +34,7 @@ struct Args {
     network: String,
 
     /// Protocol version to advertise
-    #[arg(short = 'v', long, default_value_t = 70016)]
+    #[arg(short = 'v', long, default_value = "70016")]
     protocol_version: u32,
 
     /// User agent string to advertise
@@ -66,21 +65,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let log_level = match args.log_level.to_lowercase().as_str() {
-        "error" => LevelFilter::Error,
-        "warn" => LevelFilter::Warn,
-        "info" => LevelFilter::Info,
-        "debug" => LevelFilter::Debug,
-        "trace" => LevelFilter::Trace,
-        _ => LevelFilter::Info,
+        "error" => log::LevelFilter::Error,
+        "warn" => log::LevelFilter::Warn,
+        "info" => log::LevelFilter::Info,
+        "debug" => log::LevelFilter::Debug,
+        "trace" => log::LevelFilter::Trace,
+        _ => log::LevelFilter::Info,
     };
 
-    TermLogger::init(
-        log_level,
-        Config::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
-    .unwrap();
+    // Configure fern logger
+    fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "[{}] {} - {}",
+                record.level(),
+                record.target(),
+                message
+            ))
+        })
+        .level(log_level)
+        .chain(std::io::stderr())
+        .apply()
+        .unwrap();
 
     info!("PINGS AND PONGS");
     info!("Network: {network}");
@@ -182,7 +188,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Set up ping interval.
         let mut ping_interval = interval(Duration::from_secs(5));
-        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let mut ping_count = 0u32;
         let mut nonce = 1u64;

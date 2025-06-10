@@ -2,9 +2,9 @@
 name = "bitcoin-peers-connection"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.63"
 license = "CC0"
-description = "Bitcoin peer connection and transport implementations"
+description = "Bitcoin peer connection and transport"
 authors = ["Nick Johnson <nick@yonson.dev>"]
 repository = "https://github.com/nyonson/bitcoin-peers"
 keywords = ["bitcoin", "network", "peer-to-peer", "connection"]
@@ -19,8 +19,7 @@ log = { version = "0.4.8" }
 [dev-dependencies]
 clap = { version = "4.5.39", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
-simplelog = { version = "0.12" }
-env_logger = { version = "0.11" }
+fern = { version = "0.7" }
 # For I/O mocking.
 tokio-test = "0.4"
 # For integration tests with a real bitcoin node.

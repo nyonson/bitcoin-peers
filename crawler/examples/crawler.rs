@@ -5,7 +5,6 @@ use bitcoin::Network;
 use bitcoin_peers_crawler::{CrawlerBuilder, Peer};
 use clap::Parser;
 use log::LevelFilter;
-use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
 use std::net::IpAddr;
 
 #[derive(Parser, Debug)]
@@ -16,7 +15,7 @@ struct Args {
     address: String,
 
     /// Port number of the seed node.
-    #[arg(short, long, default_value_t = 8333)]
+    #[arg(short, long, default_value = "8333")]
     port: u16,
 
     /// Custom user agent (optional).
@@ -41,13 +40,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => LevelFilter::Info,
     };
 
-    TermLogger::init(
-        log_level,
-        Config::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
-    .unwrap();
+    // Configure fern logger
+    fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "[{}] {} - {}",
+                record.level(),
+                record.target(),
+                message
+            ))
+        })
+        .level(log_level)
+        .chain(std::io::stderr())
+        .apply()
+        .unwrap();
 
     log::info!("CRAWLING THE BITCOIN NETWORK");
 

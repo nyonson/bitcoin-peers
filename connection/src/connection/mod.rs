@@ -62,41 +62,6 @@ use crate::peer::Peer;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 
-/// Trait for types that can send Bitcoin network messages.
-///
-/// This trait is used internally for testing purposes, particularly
-/// in the crawler module to enable mock connections.
-#[allow(dead_code)]
-#[allow(async_fn_in_trait)]
-pub(crate) trait MessageSender {
-    /// Send a message to the peer.
-    ///
-    /// # Arguments
-    ///
-    /// * `message` - The Bitcoin network message to send.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success or the specific error that occurred.
-    async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError>;
-}
-
-/// Trait for types that can receive Bitcoin network messages.
-///
-/// This trait is used internally for testing purposes, particularly
-/// in the crawler module to enable mock connections.
-#[allow(dead_code)]
-#[allow(async_fn_in_trait)]
-pub(crate) trait MessageReceiver {
-    /// Receive a message from the peer.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(`[`NetworkMessage`]`)` - The received message
-    /// * `Err(`[`ConnectionError`]`)` - If an error occurred during message reception
-    async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError>;
-}
-
 /// Receiver half of a split connection.
 #[derive(Debug)]
 pub enum ConnectionReceiver {
@@ -125,12 +90,6 @@ impl ConnectionReceiver {
         match self {
             ConnectionReceiver::Tcp(tcp) => tcp.receive().await,
         }
-    }
-}
-
-impl MessageReceiver for ConnectionReceiver {
-    async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
-        self.receive().await
     }
 }
 
@@ -338,18 +297,6 @@ impl Connection {
         Ok(Connection::Tcp(
             tcp::connect(peer, network, configuration).await?,
         ))
-    }
-}
-
-impl MessageSender for Connection {
-    async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
-        self.send(message).await
-    }
-}
-
-impl MessageReceiver for Connection {
-    async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
-        self.receive().await
     }
 }
 
