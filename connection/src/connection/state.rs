@@ -6,8 +6,8 @@
 //!    `NotNegotiated` and the protocol version is `Unknown`.
 //! 2. **Handshake**: During the version handshake, the protocol version is determined
 //!    by taking the minimum of both peers' versions.
-//! 3. **Feature Negotiation**: After the handshake, peers may exchange feature negotiation
-//!    messages.
+//! 3. **Feature Negotiation**: During the handshake, peers may exchange feature negotiation
+//!    messages. But there is not hard defined ordering.
 //! 4. **Steady State**: Once features are negotiated, the state usually remains stable and can be
 //!    queried to determine which features are active.
 //!

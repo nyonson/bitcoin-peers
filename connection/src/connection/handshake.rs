@@ -249,7 +249,7 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     // Copy feature preferences to avoid borrow checker issues
-    let features = connection.configuration.features;
+    let features = connection.configuration.feature_preferences;
 
     // SendAddrV2 for address format support (BIP155).
     if features.enable_addrv2 && effective_version >= ADDRV2_MIN_PROTOCOL_VERSION {

@@ -319,6 +319,60 @@ impl Connection {
             tcp::connect(peer, network, configuration).await?,
         ))
     }
+
+    /// Accept an incoming TCP connection from a bitcoin peer and perform the handshake.
+    ///
+    /// This function is used for inbound connections where another peer is connecting to your node.
+    /// Unlike [`Connection::tcp`] which connects to a known peer, this function discovers peer
+    /// information during the handshake process.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` - The incoming TCP stream from a connecting peer
+    /// * `network` - The bitcoin [`Network`] to use
+    /// * `configuration` - Configuration for the connection
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(`[`Self`]`)` - A successfully established and handshaked connection
+    /// * `Err(`[`ConnectionError`]`)` - If the handshake failed or connection was invalid
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use bitcoin::Network;
+    /// use bitcoin_peers::{Connection, ConnectionConfiguration, PeerProtocolVersion};
+    /// use tokio::net::TcpListener;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let listener = TcpListener::bind("127.0.0.1:8333").await?;
+    /// let config = ConnectionConfiguration::listening(
+    ///     PeerProtocolVersion::Known(70016),
+    ///     None,
+    ///     8333, // Current block height
+    /// );
+    ///
+    /// loop {
+    ///     let (stream, addr) = listener.accept().await?;
+    ///     println!("Incoming connection from: {}", addr);
+    ///     
+    ///     let connection = Connection::tcp_accept(stream, Network::Bitcoin, config.clone()).await?;
+    ///     println!("Handshake completed with peer: {}", connection.peer().await);
+    ///     
+    ///     // Handle the connection...
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn tcp_accept(
+        stream: tokio::net::TcpStream,
+        network: Network,
+        configuration: ConnectionConfiguration,
+    ) -> Result<Self, ConnectionError> {
+        Ok(Connection::Tcp(
+            tcp::accept(stream, network, configuration).await?,
+        ))
+    }
 }
 
 impl std::fmt::Display for Connection {

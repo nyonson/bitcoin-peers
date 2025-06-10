@@ -7,6 +7,7 @@ use super::{
 };
 use crate::peer::{Peer, PeerServices};
 use crate::transport::Transport;
+use crate::PeerProtocolVersion;
 use bip324::{AsyncProtocol, Role};
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::ServiceFlags;
@@ -32,12 +33,36 @@ pub type TcpConnectionReceiver = AsyncConnectionReceiver<OwnedReadHalf>;
 /// This is a convenience type alias for [`AsyncConnectionSender`] with Tokio's TCP write half.
 pub type TcpConnectionSender = AsyncConnectionSender<OwnedWriteHalf>;
 
+/// Create a Peer from an incoming TCP connection.
+fn peer_from_socket_addr(socket_addr: SocketAddr) -> Peer {
+    let address = match socket_addr.ip() {
+        IpAddr::V4(ipv4) => AddrV2::Ipv4(ipv4),
+        IpAddr::V6(ipv6) => AddrV2::Ipv6(ipv6),
+    };
+
+    Peer {
+        address,
+        port: socket_addr.port(),
+        services: PeerServices::Unknown,
+        version: PeerProtocolVersion::Unknown,
+    }
+}
+
+/// Configure TCP stream for Bitcoin P2P protocol usage.
+///
+/// Sets TCP_NODELAY to true, which disables Nagle's algorithm. This is beneficial
+/// for the bitcoin p2p protocol since it uses many small messages where latency
+/// is more important than bandwidth efficiency.
+fn configure_tcp_stream(stream: &TcpStream) -> Result<(), ConnectionError> {
+    stream.set_nodelay(true)?;
+    Ok(())
+}
+
 /// Helper function to establish TCP connection with timeout and nodelay.
 async fn establish_tcp_connection(socket_addr: SocketAddr) -> Result<TcpStream, ConnectionError> {
     match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(socket_addr)).await {
         Ok(Ok(stream)) => {
-            // No delay is helpful for the small packets of the bitcoin p2p protocol.
-            stream.set_nodelay(true)?;
+            configure_tcp_stream(&stream)?;
             Ok(stream)
         }
         Ok(Err(e)) => Err(ConnectionError::Io(e)),
@@ -48,8 +73,8 @@ async fn establish_tcp_connection(socket_addr: SocketAddr) -> Result<TcpStream, 
     }
 }
 
-/// Negotiate transport protocol for TCP connection.
-async fn negotiate_tcp_transport(
+/// Negotiate transport protocol for outbound TCP connection.
+async fn negotiate_outbound_transport(
     socket_addr: SocketAddr,
     network: Network,
     peer: &Peer,
@@ -60,8 +85,7 @@ async fn negotiate_tcp_transport(
         PeerServices::Known(flags) => flags.has(ServiceFlags::P2P_V2),
     };
 
-    // Only skip v2 attempt if two criteria are met.
-    //
+    // Only skip v2 attempt if two criteria are met:
     // 1. Connection configuration policy allows for v1 fallback (V2Preferred).
     // 2. Peer explicitly doesn't advertise v2 support.
     if !peer_supports_v2 && matches!(policy, TransportPolicy::V2Preferred) {
@@ -115,6 +139,51 @@ async fn negotiate_tcp_transport(
     }
 }
 
+/// Negotiate transport protocol for inbound TCP connection.
+///
+/// For inbound connections, we act as the responder and must detect whether
+/// the peer is attempting a v2 (BIP324) or v1 (legacy) connection.
+async fn negotiate_inbound_transport(
+    network: Network,
+    mut reader: OwnedReadHalf,
+    mut writer: OwnedWriteHalf,
+    policy: TransportPolicy,
+) -> Result<(Transport, OwnedReadHalf, OwnedWriteHalf), ConnectionError> {
+    // Try to establish v2 transport as responder.
+    match AsyncProtocol::new(
+        network,
+        Role::Responder,
+        None,
+        None,
+        &mut reader,
+        &mut writer,
+    )
+    .await
+    {
+        Ok(v2) => {
+            log::info!("Successfully established v2 encrypted inbound connection");
+            Ok((Transport::v2(v2), reader, writer))
+        }
+        Err(e) => {
+            log::debug!("V2 handshake failed for inbound connection: {:?}", e);
+
+            match policy {
+                TransportPolicy::V2Required => {
+                    log::error!(
+                        "V2 transport required but could not be established for inbound connection"
+                    );
+                    Err(ConnectionError::V2TransportRequired)
+                }
+                TransportPolicy::V2Preferred => {
+                    // For inbound connections, if v2 fails we can try v1 with the existing stream.
+                    log::info!("Using v1 plaintext inbound connection");
+                    Ok((Transport::v1(network.magic()), reader, writer))
+                }
+            }
+        }
+    }
+}
+
 /// Establish a TCP connection to a bitcoin peer and perform the handshake.
 ///
 /// This function handles:
@@ -145,12 +214,51 @@ pub async fn connect(
     };
     let socket_addr = SocketAddr::new(ip_addr, peer.port);
 
-    // Negotiate transport based on peer capabilities and configuration policy
+    // Negotiate transport based on peer capabilities and configuration policy.
     let (transport, reader, writer) =
-        negotiate_tcp_transport(socket_addr, network, &peer, configuration.transport_policy)
+        negotiate_outbound_transport(socket_addr, network, &peer, configuration.transport_policy)
             .await?;
 
     let mut connection = AsyncConnection::new(peer, configuration, transport, reader, writer);
+    super::handshake::perform_handshake(&mut connection).await?;
+
+    Ok(connection)
+}
+
+/// Accept an incoming TCP connection from a bitcoin peer and perform the handshake.
+///
+/// # Arguments
+///
+/// * `stream` - The incoming TCP stream from a connecting peer.
+/// * `network` - The bitcoin network to use.
+/// * `configuration` - Configuration for the connection.
+///
+/// # Returns
+///
+/// A fully established and handshaked connection ready for use.
+///
+/// # Notes
+///
+/// Unlike outbound connections where we know the peer details beforehand,
+/// inbound connections start with unknown peer information that gets discovered
+/// during the handshake process.
+pub async fn accept(
+    stream: TcpStream,
+    network: Network,
+    configuration: ConnectionConfiguration,
+) -> Result<TcpConnection, ConnectionError> {
+    configure_tcp_stream(&stream)?;
+
+    let peer_addr = stream.peer_addr()?;
+    let peer = peer_from_socket_addr(peer_addr);
+
+    let (reader, writer) = stream.into_split();
+    let (transport, reader, writer) =
+        negotiate_inbound_transport(network, reader, writer, configuration.transport_policy)
+            .await?;
+    let mut connection = AsyncConnection::new(peer, configuration, transport, reader, writer);
+
+    // Perform handshake (peer will send version first, we respond).
     super::handshake::perform_handshake(&mut connection).await?;
 
     Ok(connection)
