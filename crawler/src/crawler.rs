@@ -19,8 +19,6 @@ use tokio::sync::{
 };
 use tokio::time::timeout;
 
-const PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
-
 /// Internal trait for bitcoin peer connections that can send and receive messages.
 ///
 /// This trait abstracts the core operations needed for crawling, allowing
@@ -98,6 +96,10 @@ pub struct Crawler {
     network: Network,
     /// Custom user agent advertised for connection. Defaults to bitcoin-peers user agent if None.
     user_agent: Option<UserAgent>,
+    /// Transport policy for connections.
+    transport_policy: TransportPolicy,
+    /// Protocol version to advertise in connections.
+    protocol_version: PeerProtocolVersion,
     /// Peers which need to be tested. VecDeque for FIFO.
     discovered_peers: Arc<Mutex<VecDeque<Peer>>>,
     /// Peers which should no longer be considered.
@@ -111,14 +113,16 @@ pub struct Crawler {
 /// ```
 /// # fn main() -> Result<(), bitcoin_peers_crawler::CrawlerBuilderError> {
 /// use bitcoin::Network;
-/// use bitcoin_peers_crawler::CrawlerBuilder;
+/// use bitcoin_peers_crawler::{CrawlerBuilder, TransportPolicy};
 ///
 /// // Create a basic crawler for the Bitcoin mainnet
 /// let basic_crawler = CrawlerBuilder::new(Network::Bitcoin).build();
 ///
-/// // Create a crawler with a custom user agent using ? for error propagation
+/// // Create a crawler with custom settings
 /// let custom_crawler = CrawlerBuilder::new(Network::Bitcoin)
 ///     .with_user_agent("/my-custom-crawler:1.0/")?
+///     .with_transport_policy(TransportPolicy::V2Required)
+///     .with_protocol_version(70015)
 ///     .build();
 /// # Ok(())
 /// # }
@@ -129,6 +133,10 @@ pub struct CrawlerBuilder {
     network: Network,
     /// Custom user agent advertised for connection.
     user_agent: Option<UserAgent>,
+    /// Transport policy for connections.
+    transport_policy: TransportPolicy,
+    /// Protocol version to advertise in connections.
+    protocol_version: PeerProtocolVersion,
 }
 
 #[derive(Clone)]
@@ -151,6 +159,8 @@ impl CrawlerBuilder {
         CrawlerBuilder {
             network,
             user_agent: None,
+            transport_policy: TransportPolicy::V2Preferred,
+            protocol_version: PeerProtocolVersion::Known(70016),
         }
     }
 
@@ -177,6 +187,36 @@ impl CrawlerBuilder {
         Ok(self)
     }
 
+    /// Set the transport policy for connections.
+    ///
+    /// Controls whether to require V2 transport or prefer V2 with V1 fallback.
+    ///
+    /// # Arguments
+    ///
+    /// * `policy` - The transport policy to use for connections.
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining.
+    pub fn with_transport_policy(mut self, policy: TransportPolicy) -> Self {
+        self.transport_policy = policy;
+        self
+    }
+
+    /// Set the protocol version to advertise in connections.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` - The protocol version to advertise.
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining.
+    pub fn with_protocol_version(mut self, version: u32) -> Self {
+        self.protocol_version = PeerProtocolVersion::Known(version);
+        self
+    }
+
     /// Build the crawler with the configured options.
     ///
     /// # Returns
@@ -186,6 +226,8 @@ impl CrawlerBuilder {
         Crawler {
             network: self.network,
             user_agent: self.user_agent,
+            transport_policy: self.transport_policy,
+            protocol_version: self.protocol_version,
             discovered_peers: Arc::new(Mutex::new(VecDeque::new())),
             tested_peers: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -335,8 +377,8 @@ impl CrawlSession {
             peer.clone(),
             self.crawler.network,
             ConnectionConfiguration::non_listening(
-                PROTOCOL_VERSION,
-                TransportPolicy::V2Preferred,
+                self.crawler.protocol_version,
+                self.crawler.transport_policy,
                 FeaturePreferences::default(),
                 self.crawler.user_agent.clone(),
             ),
@@ -616,5 +658,31 @@ mod tests {
             mock_conn.sent_messages[0],
             NetworkMessage::GetAddr
         ));
+    }
+
+    #[tokio::test]
+    async fn test_crawler_configuration() {
+        // Test default configuration
+        let default_crawler = CrawlerBuilder::new(Network::Bitcoin).build();
+        assert_eq!(
+            default_crawler.transport_policy,
+            TransportPolicy::V2Preferred
+        );
+        assert_eq!(
+            default_crawler.protocol_version,
+            PeerProtocolVersion::Known(70016)
+        );
+
+        // Test custom configuration
+        let custom_crawler = CrawlerBuilder::new(Network::Testnet)
+            .with_transport_policy(TransportPolicy::V2Required)
+            .with_protocol_version(70015)
+            .build();
+        assert_eq!(custom_crawler.transport_policy, TransportPolicy::V2Required);
+        assert_eq!(
+            custom_crawler.protocol_version,
+            PeerProtocolVersion::Known(70015)
+        );
+        assert_eq!(custom_crawler.network, Network::Testnet);
     }
 }
