@@ -63,9 +63,11 @@
   # Final confirmation.
   printf "Publishing {{crate}} v{{version}}, do you want to continue? [y/N]: "; \
   read -r response; \
-  [ "$response" = "y" ] || [ "$response" = "Y" ] || { echo "publish: Cancelled by user"; exit 1; }
+  # Exit 1 to kill the script.
+  [ "$response" = "y" ] || [ "$response" = "Y" ] || { echo "publish: Cancelled"; exit 1; }
   # Publish the tag.
   echo "publish: Adding release tag {{crate}}-v{{version}} and pushing to {{remote}}..."
+  # Using "-a" annotated tag over a lightweight tag for robust history.
   git tag -a {{crate}}-v{{version}} -m "Release {{crate}} v{{version}}"
   git push {{remote}} {{crate}}-v{{version}}
   # Publish the crate.
