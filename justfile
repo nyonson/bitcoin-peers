@@ -57,9 +57,12 @@
   if [ "$$(git rev-parse --abbrev-ref HEAD)" != "master" ]; then \
     echo "publish: Not on master branch"; exit 1; fi
   if ! grep -q "## v{{version}}" {{crate}}/CHANGELOG.md; then \
-    echo "publish: CHANGELOG.md entry missing {{version}}"; exit 1; fi
+    echo "publish: CHANGELOG.md entry missing for v{{version}}"; exit 1; fi
   if ! grep -q '^version = "{{version}}"' {{crate}}/Cargo.toml; then \
     echo "publish: Cargo.toml version mismatch"; exit 1; fi
+  # Final confirmation.
+  printf "Publishing {{crate}} v{{version}}, do you want to continue? [y/N]: " && read -r response && \
+  if [ "$$response" != "y" ] && [ "$$response" != "Y" ]; then echo "publish: Cancelled by user"; exit 1; fi
   # Publish the tag.
   echo "publish: Adding release tag {{crate}}-v{{version}} and pushing to {{remote}}..."
   git tag -a {{crate}}-v{{version}} -m "Release {{crate}} v{{version}}"

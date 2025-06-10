@@ -24,4 +24,4 @@ fern = { version = "0.7" }
 # For I/O mocking.
 tokio-test = "0.4"
 # For integration tests with a real bitcoin node.
-corepc-node = { version = "0.8.0", default-features = false, features = ["28_1"] }
+corepc-node = { version = "0.8.0", default-features = false, features = ["28_1", "download"] }
