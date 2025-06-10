@@ -54,7 +54,7 @@
   # Publish guardrails: be on a clean master, updated changelog, updated manifest.
   if ! git diff --quiet || ! git diff --cached --quiet; then \
     echo "publish: Uncommitted changes"; exit 1; fi
-  if [ "$$(git rev-parse --abbrev-ref HEAD)" != "master" ]; then \
+  if [ "`git rev-parse --abbrev-ref HEAD`" != "master" ]; then \
     echo "publish: Not on master branch"; exit 1; fi
   if ! grep -q "## v{{version}}" {{crate}}/CHANGELOG.md; then \
     echo "publish: CHANGELOG.md entry missing for v{{version}}"; exit 1; fi
