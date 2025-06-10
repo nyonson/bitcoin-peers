@@ -2,7 +2,8 @@ use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{
-    Connection, ConnectionConfiguration, ConnectionError, FeaturePreferences, TransportPolicy,
+    user_agent, Connection, ConnectionConfiguration, ConnectionError, FeaturePreferences,
+    TransportPolicy,
 };
 use bitcoin_peers_connection::{Peer, PeerProtocolVersion};
 use log::{debug, info};
@@ -26,44 +27,25 @@ const PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
 #[derive(Debug, Clone)]
 pub enum CrawlerBuilderError {
     /// User agent doesn't follow the required format.
-    InvalidUserAgent,
+    InvalidUserAgent(user_agent::UserAgentError),
 }
 
 impl fmt::Display for CrawlerBuilderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CrawlerBuilderError::InvalidUserAgent => {
-                write!(f, "Invalid user agent: must follow format '/Name:Version/'")
+            CrawlerBuilderError::InvalidUserAgent(err) => {
+                write!(f, "Invalid user agent: {err}")
             }
         }
     }
 }
 
-impl std::error::Error for CrawlerBuilderError {}
-
-/// Validates that a user agent string follows the Bitcoin Core convention: "/Name:Version/"
-///
-/// # Arguments
-///
-/// * `user_agent` - The user agent string to validate
-///
-/// # Returns
-///
-/// * `Ok(())` - If the user agent is valid
-/// * `Err(BuilderError)` - If the user agent format is invalid
-fn validate_user_agent(user_agent: &str) -> Result<(), CrawlerBuilderError> {
-    if !user_agent.starts_with('/') || !user_agent.ends_with('/') || !user_agent.contains(':') {
-        return Err(CrawlerBuilderError::InvalidUserAgent);
+impl std::error::Error for CrawlerBuilderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CrawlerBuilderError::InvalidUserAgent(err) => Some(err),
+        }
     }
-
-    // Extract the part between the slashes, split on the colon.
-    let contents = &user_agent[1..user_agent.len() - 1];
-    let parts: Vec<&str> = contents.split(':').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        return Err(CrawlerBuilderError::InvalidUserAgent);
-    }
-
-    Ok(())
 }
 
 /// Messages sent from the [`Crawler`] to the caller about peer discovery.
@@ -86,8 +68,7 @@ impl fmt::Display for CrawlerMessage {
 
 /// A crawler for the Bitcoin peer-to-peer network.
 ///
-/// This crawler connects to Bitcoin nodes, performs handshakes, and can collect
-/// peer information from the network.
+/// This crawler connects to bitcoin peers, performs handshakes, and asks for more peers.
 #[derive(Debug, Clone)]
 pub struct Crawler {
     /// Bitcoin network the [`Crawler`] operates on.
@@ -168,7 +149,8 @@ impl CrawlerBuilder {
         user_agent: S,
     ) -> Result<Self, CrawlerBuilderError> {
         let user_agent = user_agent.into();
-        validate_user_agent(&user_agent)?;
+        user_agent::validate_bitcoin_core_format(&user_agent)
+            .map_err(CrawlerBuilderError::InvalidUserAgent)?;
         self.user_agent = Some(user_agent);
         Ok(self)
     }

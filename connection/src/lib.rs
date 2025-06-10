@@ -1,6 +1,7 @@
 mod connection;
 mod peer;
 mod transport;
+pub mod user_agent;
 
 pub use connection::{
     AddrV2State, Connection, ConnectionConfiguration, ConnectionError, ConnectionReceiver,
