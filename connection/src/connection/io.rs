@@ -152,6 +152,14 @@ where
         self.peer.lock().await.clone()
     }
 
+    /// Get a copy of the current connection state.
+    ///
+    /// The connection state includes information about protocol features that have been
+    /// negotiated with the peer. See [`ConnectionState`] for details.
+    pub async fn state(&self) -> ConnectionState {
+        self.state.lock().await.clone()
+    }
+
     /// Receive a message from the peer.
     ///
     /// This method handles certain protocol-level messages automatically,
@@ -299,6 +307,14 @@ where
     /// Get a copy of the peer this connection is established with.
     pub async fn peer(&self) -> Peer {
         self.peer.lock().await.clone()
+    }
+
+    /// Get a copy of the current connection state.
+    ///
+    /// The connection state includes information about protocol features that have been
+    /// negotiated with the peer. See [`ConnectionState`] for details.
+    pub async fn state(&self) -> ConnectionState {
+        self.state.lock().await.clone()
     }
 
     /// Send a message to the peer.

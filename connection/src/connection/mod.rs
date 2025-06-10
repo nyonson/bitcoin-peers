@@ -53,9 +53,10 @@ mod io;
 mod state;
 mod tcp;
 
-pub use configuration::ConnectionConfiguration;
+pub use configuration::{ConnectionConfiguration, FeaturePreferences, TransportPolicy};
 pub use error::ConnectionError;
 pub use io::{AsyncConnection, AsyncConnectionReceiver, AsyncConnectionSender};
+pub use state::{AddrV2State, ConnectionState, SendHeadersState, WtxidRelayState};
 pub use tcp::{TcpConnection, TcpConnectionReceiver, TcpConnectionSender};
 
 use crate::peer::Peer;
@@ -74,6 +75,16 @@ impl ConnectionReceiver {
     pub async fn peer(&self) -> Peer {
         match self {
             ConnectionReceiver::Tcp(tcp) => tcp.peer().await,
+        }
+    }
+
+    /// Get a copy of the current connection state.
+    ///
+    /// The connection state includes information about protocol features that have been
+    /// negotiated with the peer. See [`ConnectionState`] for details.
+    pub async fn state(&self) -> state::ConnectionState {
+        match self {
+            ConnectionReceiver::Tcp(tcp) => tcp.state().await,
         }
     }
 
@@ -186,6 +197,16 @@ impl Connection {
     pub async fn peer(&self) -> Peer {
         match self {
             Connection::Tcp(conn) => conn.peer().await,
+        }
+    }
+
+    /// Get a copy of the current connection state.
+    ///
+    /// The connection state includes information about protocol features that have been
+    /// negotiated with the peer. See [`ConnectionState`] for details.
+    pub async fn state(&self) -> state::ConnectionState {
+        match self {
+            Connection::Tcp(conn) => conn.state().await,
         }
     }
 

@@ -11,7 +11,7 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```
 //! use bitcoin::Network;
 //! use bitcoin::p2p::message::NetworkMessage;
 //! use bitcoin_peers::Transport;
@@ -115,7 +115,7 @@ impl From<encode::Error> for TransportError {
     }
 }
 
-/// This type handles receiving Bitcoin network messages using the appropriate
+/// This type handles receiving bitcoin network messages using the appropriate
 /// protocol (v1 or v2).
 #[derive(Debug)]
 pub enum TransportReceiver {
@@ -127,7 +127,7 @@ pub enum TransportReceiver {
 
 /// Sender half of a split transport.
 ///
-/// This type handles sending Bitcoin network messages using the appropriate
+/// This type handles sending bitcoin network messages using the appropriate
 /// protocol (V1 or V2).
 #[derive(Debug)]
 pub enum TransportSender {
@@ -138,7 +138,7 @@ pub enum TransportSender {
 }
 
 impl TransportReceiver {
-    /// Receive a Bitcoin network message from the transport.
+    /// Receive a bitcoin network message from the transport.
     ///
     /// This method handles all the protocol-specific details for receiving a message,
     /// including reading, parsing, decryption (for V2), and deserialization.
@@ -177,7 +177,7 @@ impl TransportReceiver {
 }
 
 impl TransportSender {
-    /// Send a Bitcoin network message through the transport.
+    /// Send a bitcoin network message through the transport.
     ///
     /// This method handles all the protocol-specific details for sending a message,
     /// including serialization, framing, and encryption (for V2).
@@ -213,32 +213,20 @@ impl TransportSender {
     }
 }
 
-/// Policy for transport protocol selection.
+/// Represents the transport protocol used for bitcoin p2p communication.
 ///
-/// This enum controls how the connection handles transport protocol
-/// selection between v1 (plaintext) and v2 (encrypted).
-#[derive(Debug, Clone, Copy)]
-pub enum TransportPolicy {
-    /// V2 encrypted transport is required. Connection will fail if v2 cannot be established.
-    V2Required,
-    /// V2 encrypted transport is preferred, but will fall back to v1 if necessary.
-    V2Preferred,
-}
-
-/// Represents the transport protocol used for Bitcoin peer-to-peer communication.
-///
-/// This enum abstracts over the different Bitcoin network protocols,
+/// This enum abstracts over the different bitcoin network protocols,
 /// providing a unified interface for sending and receiving messages. It handles
 /// all the protocol-specific details like serialization, encryption, and framing.
 ///
-/// * `V1` - The traditional plaintext Bitcoin protocol
+/// * `V1` - The traditional plaintext bitcoin protocol
 /// * `V2` - The encrypted BIP-324 protocol with improved privacy and security
 ///
 /// # Examples
 ///
 /// Using a V1 transport:
 ///
-/// ```rust,no_run
+/// ```
 /// # use bitcoin::p2p::Magic;
 /// # use bitcoin::p2p::message::NetworkMessage;
 /// # use bitcoin_peers::Transport;

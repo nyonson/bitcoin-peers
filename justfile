@@ -8,6 +8,7 @@
   # Lint all workspace members. Enable all feature flags. Check all targets (tests, examples) along with library code. Turn warnings into errors.
   cargo +{{toolchain}} clippy --workspace --all-features --all-targets -- -D warnings
   # Checking the extremes: all features enabled as well as none. If features are additive, this should expose conflicts.
+  # If non-additive features (mutually exclusive) are defined, more specific commands are required.
   cargo +{{toolchain}} check --workspace --no-default-features --all-targets
   cargo +{{toolchain}} check --workspace --all-features --all-targets
 
@@ -50,7 +51,7 @@
  
 # Publish a new version. Requires write privileges on upsream repository and crates.io.
 @publish crate version remote="upstream":
-  # A simple publish runbook with a few guardrails.
+  # Publish guardrails: be on a clean master, updated changelog, updated manifest.
   if ! git diff --quiet || ! git diff --cached --quiet; then \
     echo "publish: Uncommitted changes"; exit 1; fi
   if [ "$$(git rev-parse --abbrev-ref HEAD)" != "master" ]; then \

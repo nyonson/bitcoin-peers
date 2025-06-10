@@ -1,11 +1,12 @@
 //! TCP-specific connections.
 
+use super::configuration::TransportPolicy;
 use super::{
     AsyncConnection, AsyncConnectionReceiver, AsyncConnectionSender, ConnectionConfiguration,
     ConnectionError,
 };
 use crate::peer::{Peer, PeerServices};
-use crate::transport::{Transport, TransportPolicy};
+use crate::transport::Transport;
 use bip324::{AsyncProtocol, Role};
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::ServiceFlags;

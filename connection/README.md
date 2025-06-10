@@ -1,7 +1,7 @@
 <div align="center">
   <h1>Bitcoin Peers Connection</h1>
   <p>
-    <strong>Bitcoin peer connection and transport</strong>
+    <strong>Peer connection and transport</strong>
   </p>
 
   <p>

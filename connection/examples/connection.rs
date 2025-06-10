@@ -1,10 +1,9 @@
-//! Example demonstrating Connection functionality including Display/Debug traits and split connections.
+//! Demonstrates Connection functionality including Display/Debug traits and split connections.
 //!
-//! This example shows:
-//! - How to establish a Bitcoin peer connection
-//! - Using Display and Debug traits to inspect connection state
-//! - Splitting a connection into separate receiver and sender halves
-//! - Concurrent reading and writing operations with ping/pong messages
+//! * How to establish a peer connection.
+//! * Using Display and Debug traits to inspect connection state.
+//! * Splitting a connection into separate receiver and sender halves.
+//! * Concurrent reading and writing operations with ping/pong messages.
 
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
@@ -73,7 +72,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => log::LevelFilter::Info,
     };
 
-    // Configure fern logger
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -111,8 +109,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection = match Connection::tcp(peer, network, config).await {
         Ok(conn) => {
             info!("Successfully connected and completed handshake");
-
-            // Demonstrate Display and Debug traits
             info!("Connection Display: {conn}");
             debug!("Connection Debug: {conn:?}");
 
@@ -127,11 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut receiver, mut sender) = connection.into_split();
     info!("Connection split into receiver and sender");
 
-    // Demonstrate Display for split connections
     info!("Receiver Display: {receiver}");
     info!("Sender Display: {sender}");
 
-    // Set up shutdown signal using broadcast channel for multiple receivers
+    // Set up shutdown signal using broadcast channel for multiple receivers.
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
     let mut shutdown_rx1 = shutdown_tx.subscribe();
     let mut shutdown_rx2 = shutdown_tx.subscribe();
@@ -145,12 +140,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             tokio::select! {
-                // Handle shutdown signal
+                // Handle shutdown signal.
                 _ = shutdown_rx1.recv() => {
                     info!("Receiver shutting down");
                     break;
                 }
-                // Handle incoming messages
+                // Handle incoming messages.
                 result = receiver.receive() => {
                     match result {
                         Ok(msg) => match msg {

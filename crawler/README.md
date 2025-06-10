@@ -1,7 +1,7 @@
 <div align="center">
   <h1>Bitcoin Peers Crawler</h1>
   <p>
-    <strong>Bitcoin network peer discovery</strong>
+    <strong>Network peer discovery</strong>
   </p>
 
   <p>

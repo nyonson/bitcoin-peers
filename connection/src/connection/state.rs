@@ -1,10 +1,41 @@
-//! Connection state management and protocol negotiation tracking.
+//! Connection feature tracking.
+//!
+//! The connection state evolves during the lifetime of a connection.
+//!
+//! 1. **Initialized**: When a connection is established, all negotiation states start as
+//!    `NotNegotiated` and the protocol version is `Unknown`.
+//! 2. **Handshake**: During the version handshake, the protocol version is determined
+//!    by taking the minimum of both peers' versions.
+//! 3. **Feature Negotiation**: After the handshake, peers may exchange feature negotiation
+//!    messages.
+//! 4. **Steady State**: Once features are negotiated, the state usually remains stable and can be
+//!    queried to determine which features are active.
+//!
+//! # Feature Negotiation
+//!
+//! The bitcoin p2p protocol uses a two-tier system to establish if a feature is enabled for a connection.
+//!
+//! 1. **Protocol Version**: A numeric version (e.g., 70016) that defines which messages
+//!    and features a node implementation can understand. This prevents nodes from sending
+//!    messages that would be completely unrecognized by older implementations.
+//! 2. **Feature Negotiation**: Optional messages exchanged after the handshake to enable
+//!    specific features. Even if both nodes support a feature (based on protocol version),
+//!    they must explicitly opt-in through negotiation.
+//!
+//! Most features follow a symmetric negotiation pattern where a feature is enabled only
+//! after both peers have sent the corresponding message (e.g. `SendAddrV2`). Although
+//! some are one-directional.
 
 use crate::peer::PeerProtocolVersion;
-use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// State of AddrV2 support negotiation for the connection.
+///
+/// Once enabled, peers SHOULD send `addrv2` messages instead of
+/// legacy `addr` messages when sharing addresses. But peers
+/// MUST still accept legacy `addr` messages even if enabled
+/// for backwards compatability.
+///
+/// See [BIP-155](https://en.bitcoin.it/wiki/BIP_0155).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddrV2State {
     /// AddrV2 support has not been negotiated yet.
@@ -38,6 +69,13 @@ impl AddrV2State {
 }
 
 /// State of SendHeaders support negotiation for the connection.
+///
+/// Indicates that a node prefers to receive new block announcements via a
+/// `headers` message rather than an `inv`. A node SHOULD should announce
+/// new blocks to a peer with a `headers` message if they receive
+/// a `sendheaders` message.
+///
+/// See [BIP-130](https://en.bitcoin.it/wiki/BIP_0130).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendHeadersState {
     /// SendHeaders support has not been negotiated yet.
@@ -71,6 +109,11 @@ impl SendHeadersState {
 }
 
 /// State of WtxidRelay support negotiation for the connection.
+///
+/// With wtxidrelay, transactions are announced via `inv` using their
+/// witeness transaction ID (wtxid) instead of their transaction hash (txid).
+///
+/// See [BIP-339](https://en.bitcoin.it/wiki/BIP_0339).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WtxidRelayState {
     /// WtxidRelay support has not been negotiated yet.
@@ -104,7 +147,9 @@ impl WtxidRelayState {
 }
 
 /// Runtime state of a connection.
-#[derive(Debug)]
+///
+/// This struct tracks the negotiated capabilities and features of a bitcoin p2p connection.
+#[derive(Debug, Clone)]
 pub struct ConnectionState {
     /// The protocol version negotiated between peers (minimum of both versions).
     pub effective_protocol_version: PeerProtocolVersion,
@@ -137,41 +182,8 @@ impl ConnectionState {
     }
 }
 
-/// Gets the current Unix timestamp (seconds since January 1, 1970 00:00:00 UTC).
-///
-/// # Returns
-///
-/// An i64 representing the current Unix timestamp.
-///
-/// # Panics
-///
-/// If the system clock is set to a time before the Unix epoch
-/// (January 1, 1970), which is extremely unlikely on modern systems.
-pub fn unix_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("System time is before the Unix epoch")
-        .as_secs() as i64
-}
-
-/// Generates a 64-bit nonce for use in Bitcoin P2P version messages.
-///
-/// This function creates a reasonably unique nonce without requiring a `rand` crate.
-/// While *not* cryptographically secure, this nonce is suitable for the bitcoin p2p
-/// protocol's connection loop detection mechanism.
-///
-/// # Returns
-///
-/// A 64-bit unsigned integer to use as a nonce.
-pub fn generate_nonce() -> u64 {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_nanos() as u64;
-
-    // Mix in the process ID for additional entropy.
-    let pid = process::id() as u64;
-
-    // Combine the values with bitwise operations.
-    now ^ (pid.rotate_left(32))
+impl Default for ConnectionState {
+    fn default() -> Self {
+        Self::new()
+    }
 }

@@ -1,7 +1,6 @@
 //! Connection configuration types and constants.
 
 use crate::peer::PeerProtocolVersion;
-use crate::transport::TransportPolicy;
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::ServiceFlags;
 use std::net::Ipv4Addr;
@@ -19,6 +18,36 @@ pub const BITCOIN_PEERS_USER_AGENT: &str =
 /// and should not be advertised to other nodes.
 pub const NON_LISTENING_ADDRESS: AddrV2 = AddrV2::Ipv4(Ipv4Addr::new(0, 0, 0, 0));
 pub const NON_LISTENING_PORT: u16 = 0;
+
+/// Policy for transport protocol selection during connection establishment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportPolicy {
+    /// V2 encrypted transport is required. Connection will fail if v2 cannot be established.
+    V2Required,
+    /// V2 encrypted transport is preferred, but will fall back to v1 if necessary.
+    V2Preferred,
+}
+
+/// Feature negotiation preferences for a connection.
+#[derive(Debug, Clone, Copy)]
+pub struct FeaturePreferences {
+    /// Whether to negotiate AddrV2 support (BIP-155).
+    pub enable_addrv2: bool,
+    /// Whether to negotiate SendHeaders support (BIP-130).
+    pub enable_sendheaders: bool,
+    /// Whether to negotiate WtxidRelay support (BIP-339).
+    pub enable_wtxidrelay: bool,
+}
+
+impl Default for FeaturePreferences {
+    fn default() -> Self {
+        Self {
+            enable_addrv2: true,
+            enable_sendheaders: true,
+            enable_wtxidrelay: true,
+        }
+    }
+}
 
 /// Configuration used to build a connection.
 #[derive(Debug, Clone)]
@@ -44,6 +73,8 @@ pub struct ConnectionConfiguration {
     pub relay: bool,
     /// Transport protocol selection policy.
     pub transport_policy: TransportPolicy,
+    /// Feature negotiation preferences.
+    pub feature_preferences: FeaturePreferences,
 }
 
 impl ConnectionConfiguration {
@@ -75,6 +106,20 @@ impl ConnectionConfiguration {
             start_height: 0,
             relay: false,
             transport_policy: TransportPolicy::V2Required,
+            feature_preferences: FeaturePreferences::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_feature_preferences_default() {
+        let prefs = FeaturePreferences::default();
+        assert!(prefs.enable_addrv2);
+        assert!(prefs.enable_sendheaders);
+        assert!(prefs.enable_wtxidrelay);
     }
 }

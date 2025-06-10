@@ -11,16 +11,17 @@ keywords = ["bitcoin", "network", "peer-to-peer", "connection"]
 categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
-bitcoin = { version = "0.32.6" }
+bitcoin = { version = "0.32.4" }
 bip324 = { version = "0.7.0", features = ["tokio"] }
-tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync"] }
+tokio = { version = "1", features = ["net", "io-util", "time", "sync"] }
 log = { version = "0.4.8" }
 
 [dev-dependencies]
 clap = { version = "4.5.39", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+# Tricky to find a simple log implementation with low log version, MSRV, and depenencies.
 fern = { version = "0.7" }
 # For I/O mocking.
 tokio-test = "0.4"
 # For integration tests with a real bitcoin node.
-corepc-node = { version = "0.8.0", default-features = false, features = ["28_1", "download"] }
+corepc-node = { version = "0.8.0", default-features = false, features = ["28_1"] }

@@ -1,7 +1,6 @@
 //! Bitcoin p2p protocol version handshake implementation.
 
 use super::configuration::BITCOIN_PEERS_USER_AGENT;
-use super::state::{generate_nonce, unix_timestamp};
 use super::{AsyncConnection, ConnectionError};
 use crate::peer::{
     PeerProtocolVersion, PeerServices, ADDRV2_MIN_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
@@ -13,7 +12,48 @@ use bitcoin::p2p::message_network::VersionMessage;
 use bitcoin::p2p::ServiceFlags;
 use log::{debug, error};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncWrite};
+
+/// Gets the current Unix timestamp (seconds since January 1, 1970 00:00:00 UTC).
+///
+/// # Returns
+///
+/// An i64 representing the current Unix timestamp.
+///
+/// # Panics
+///
+/// If the system clock is set to a time before the Unix epoch
+/// (January 1, 1970), which is extremely unlikely on modern systems.
+pub fn unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("System time is before the Unix epoch")
+        .as_secs() as i64
+}
+
+/// Generates a 64-bit nonce for use in Bitcoin P2P version messages.
+///
+/// This function creates a reasonably unique nonce without requiring a `rand` crate.
+/// While *not* cryptographically secure, this nonce is suitable for the bitcoin p2p
+/// protocol's connection loop detection mechanism.
+///
+/// # Returns
+///
+/// A 64-bit unsigned integer to use as a nonce.
+pub fn generate_nonce() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_nanos() as u64;
+
+    // Mix in the process ID for additional entropy.
+    let pid = process::id() as u64;
+
+    // Combine the values with bitwise operations.
+    now ^ (pid.rotate_left(32))
+}
 
 /// State machine for tracking handshake progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +239,7 @@ fn handle_verack_message(state: HandshakeState) -> HandshakeState {
     }
 }
 
-/// Sends protocol feature negotiation messages based on effective version.
+/// Sends protocol feature negotiation messages based on effective version and configuration.
 async fn send_negotiation_messages<R, W>(
     connection: &mut AsyncConnection<R, W>,
     effective_version: u32,
@@ -208,8 +248,11 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
+    // Copy feature preferences to avoid borrow checker issues
+    let features = connection.configuration.features;
+
     // SendAddrV2 for address format support (BIP155).
-    if effective_version >= ADDRV2_MIN_PROTOCOL_VERSION {
+    if features.enable_addrv2 && effective_version >= ADDRV2_MIN_PROTOCOL_VERSION {
         connection.send(NetworkMessage::SendAddrV2).await?;
         let mut state = connection.state.lock().await;
         state.addr_v2 = state.addr_v2.on_send();
@@ -217,7 +260,7 @@ where
     }
 
     // SendHeaders for header announcements.
-    if effective_version >= SENDHEADERS_MIN_PROTOCOL_VERSION {
+    if features.enable_sendheaders && effective_version >= SENDHEADERS_MIN_PROTOCOL_VERSION {
         connection.send(NetworkMessage::SendHeaders).await?;
         let mut state = connection.state.lock().await;
         state.send_headers = state.send_headers.on_send();
@@ -228,7 +271,7 @@ where
     }
 
     // WtxidRelay for witness transaction ID relay.
-    if effective_version >= WTXID_RELAY_MIN_PROTOCOL_VERSION {
+    if features.enable_wtxidrelay && effective_version >= WTXID_RELAY_MIN_PROTOCOL_VERSION {
         connection.send(NetworkMessage::WtxidRelay).await?;
         let mut state = connection.state.lock().await;
         state.wtxid_relay = state.wtxid_relay.on_send();
