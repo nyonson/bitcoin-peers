@@ -1,3 +1,8 @@
-# Opt in to the v3 MSRV-aware resolver.
+# Opt in to the v3 MSRV-aware resolver if using a new enough rust version.
+# The resolver setting in the root virtual workspace fallsback to v2 for older versions.
+# 
+# * **Newer Rust (1.80+)**: Uses v3 resolver with this setting.
+# * **Older Rust (1.51-1.79)**: Falls back to v2 resolver from the workspace resolver setting.
+# * **Very old Rust (<1.51)**: Would use v1 resolver, but MSRV of 1.75 should prevent this.
 [resolver]
 incompatible-rust-versions = "fallback"

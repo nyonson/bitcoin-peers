@@ -2,7 +2,7 @@
 
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::Network;
-use bitcoin_peers::{CrawlerBuilder, Peer};
+use bitcoin_peers_crawler::{CrawlerBuilder, Peer};
 use clap::Parser;
 use log::LevelFilter;
 use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};

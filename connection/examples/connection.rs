@@ -9,7 +9,7 @@
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
-use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
 use clap::Parser;
 use log::{debug, error, info, LevelFilter};
 use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};

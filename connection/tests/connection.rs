@@ -7,7 +7,7 @@
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
-use bitcoin_peers::{
+use bitcoin_peers_connection::{
     Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy,
 };
 use corepc_node as bitcoind;
@@ -85,7 +85,7 @@ async fn test_connection_v1() {
 
     match response {
         NetworkMessage::Pong(nonce) => assert_eq!(nonce, NONCE),
-        _ => panic!("Expected Pong message, got {:?}", response),
+        _ => panic!("Expected Pong message, got {response:?}"),
     }
 }
 
@@ -125,7 +125,7 @@ async fn test_connection_v2() {
 
     match response {
         NetworkMessage::Pong(nonce) => assert_eq!(nonce, NONCE),
-        _ => panic!("Expected Pong message, got {:?}", response),
+        _ => panic!("Expected Pong message, got {response:?}"),
     }
 }
 
@@ -155,7 +155,7 @@ async fn test_connection_split() {
     for _ in 0..10 {
         match receiver.receive().await {
             Ok(msg) => {
-                println!("Received message: {:?}", msg);
+                println!("Received message: {msg:?}");
                 match msg {
                     NetworkMessage::Pong(nonce) if nonce == NONCE => {
                         received_pong = true;
@@ -174,7 +174,7 @@ async fn test_connection_split() {
                 if received_pong {
                     break;
                 }
-                panic!("Connection error before receiving pong: {:?}", e);
+                panic!("Connection error before receiving pong: {e:?}");
             }
         }
     }

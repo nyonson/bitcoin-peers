@@ -1,0 +1,23 @@
+[package]
+name = "bitcoin-peers-crawler"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "CC0"
+description = "Bitcoin network peer discovery and crawling"
+authors = ["Nick Johnson <nick@yonson.dev>"]
+repository = "https://github.com/nyonson/bitcoin-peers"
+keywords = ["bitcoin", "network", "peer-to-peer", "crawler", "discovery"]
+categories = ["cryptography::cryptocurrencies"]
+
+[dependencies]
+bitcoin-peers-connection = { version = "0.1.0", path = "../connection" }
+bitcoin = { version = "0.32.6" }
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync"] }
+log = { version = "0.4.8" }
+
+[dev-dependencies]
+clap = { version = "4.5.39", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+simplelog = { version = "0.12" }
+env_logger = { version = "0.11" }
