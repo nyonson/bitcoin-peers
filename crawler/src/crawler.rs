@@ -19,6 +19,9 @@ use tokio::sync::{
 };
 use tokio::time::timeout;
 
+const DEFAULT_PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
+const DEFAULT_MAX_CONCURRENT_TASKS: usize = 8;
+
 /// Internal trait for bitcoin peer connections that can send and receive messages.
 ///
 /// This trait abstracts the core operations needed for crawling, allowing
@@ -100,6 +103,8 @@ pub struct Crawler {
     transport_policy: TransportPolicy,
     /// Protocol version to advertise in connections.
     protocol_version: PeerProtocolVersion,
+    /// Maximum number of concurrent connection tasks.
+    max_concurrent_tasks: usize,
     /// Peers which need to be tested. VecDeque for FIFO.
     discovered_peers: Arc<Mutex<VecDeque<Peer>>>,
     /// Peers which should no longer be considered.
@@ -123,6 +128,7 @@ pub struct Crawler {
 ///     .with_user_agent("/my-custom-crawler:1.0/")?
 ///     .with_transport_policy(TransportPolicy::V2Required)
 ///     .with_protocol_version(70015)
+///     .with_max_concurrent_tasks(16)
 ///     .build();
 /// # Ok(())
 /// # }
@@ -137,6 +143,8 @@ pub struct CrawlerBuilder {
     transport_policy: TransportPolicy,
     /// Protocol version to advertise in connections.
     protocol_version: PeerProtocolVersion,
+    /// Maximum number of concurrent connection tasks.
+    max_concurrent_tasks: usize,
 }
 
 /// Internal coordinator for a crawling session.
@@ -147,15 +155,14 @@ pub struct CrawlerBuilder {
 ///
 /// # Architecture
 ///
-/// The session follows a producer-consumer pattern.
-///
+/// The session follows a producer-consumer pattern:
 /// * **Coordinator** (`coordinate()`) - Manages the work queue and spawns processing tasks.
 /// * **Processors** (`process()`) - Handle individual peer connections and discovery.
 /// * **Communication** - Uses an MPSC channel to send results back to the caller.
 ///
 /// # Concurrency Control
 ///
-/// * **Semaphore** - Limits concurrent connections (default: 8 simultaneous peers).
+/// * **Semaphore** - Limits concurrent connections (configurable, defaults to 8).
 /// * **Shared State** - Peer queues and tested sets are protected by `Arc<Mutex<_>>`.
 /// * **Graceful Shutdown** - Monitors channel closure for early termination.
 #[derive(Clone)]
@@ -181,7 +188,8 @@ impl CrawlerBuilder {
             network,
             user_agent: None,
             transport_policy: TransportPolicy::V2Preferred,
-            protocol_version: PeerProtocolVersion::Known(70016),
+            protocol_version: DEFAULT_PROTOCOL_VERSION,
+            max_concurrent_tasks: DEFAULT_MAX_CONCURRENT_TASKS,
         }
     }
 
@@ -238,6 +246,29 @@ impl CrawlerBuilder {
         self
     }
 
+    /// Set the maximum number of concurrent connection tasks.
+    ///
+    /// Controls how many peers can be tested simultaneously. Higher values
+    /// may speed up crawling, but increase resource usage and network load.
+    ///
+    /// # Recommendations
+    ///
+    /// * **Conservative (1-4)** - For slow networks or resource-constrained environments.
+    /// * **Default (8)** - Good balance for most use cases.
+    /// * **Aggressive (16-32)** - For fast crawling with ample resources.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_tasks` - Maximum concurrent tasks (defaults to 8).
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining.
+    pub fn with_max_concurrent_tasks(mut self, max_tasks: usize) -> Self {
+        self.max_concurrent_tasks = max_tasks;
+        self
+    }
+
     /// Build the crawler with the configured options.
     ///
     /// # Returns
@@ -249,6 +280,7 @@ impl CrawlerBuilder {
             user_agent: self.user_agent,
             transport_policy: self.transport_policy,
             protocol_version: self.protocol_version,
+            max_concurrent_tasks: self.max_concurrent_tasks,
             discovered_peers: Arc::new(Mutex::new(VecDeque::new())),
             tested_peers: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -352,7 +384,7 @@ impl Crawler {
     ///
     /// # Termination
     ///
-    /// The crawler will terminate in two scenarios.
+    /// The crawler will terminate in two scenarios:
     ///
     /// * **Natural completion** - When all discovered peers have been tested and no more peers are found.
     /// * **Early termination** - When the returned receiver is dropped, the crawler will detect this and stop gracefully.
@@ -388,10 +420,21 @@ impl CrawlSession {
     /// # Process Flow
     ///
     /// 1. **Deduplication** - Checks if peer already tested, skips if so.
-    /// 2. **Connection** - Attempts connection and bitcoin handshake.
+    /// 2. **Connection** - Attempts TCP connection and bitcoin handshake.
     /// 3. **Classification** - Reports peer as `Listening` or `NonListening`.
     /// 4. **Discovery** - If connected, requests peer addresses via `getaddr`.
     /// 5. **Queue New Peers** - Adds untested peers to discovery queue.
+    ///
+    /// # Error Handling
+    ///
+    /// * **Connection failures** - Peer marked as non-listening, no retry.
+    /// * **Channel closure** - Early return if receiver disconnected.
+    /// * **Address request failures** - Logged but not fatal, peer still marked as listening.
+    ///
+    /// # Concurrency
+    ///
+    /// Multiple instances of this method run concurrently (controlled by semaphore).
+    /// Shared state access is serialized through mutex locks.
     ///
     /// # Arguments
     ///
@@ -474,11 +517,17 @@ impl CrawlSession {
     /// # Scheduling Algorithm
     ///
     /// * **Work Queue** - FIFO processing of discovered peers.
-    /// * **Concurrency Limit** - Semaphore restricts to concurrent connections.
+    /// * **Concurrency Limit** - Semaphore restricts to configured concurrent connections.
     /// * **Completion Detection** - Terminates when queue empty and no tasks running.
     /// * **Early Termination** - Stops immediately if output channel closed.
+    ///
+    /// # Termination Conditions
+    ///
+    /// 1. **Natural Completion** - No more peers to process and all tasks finished.
+    /// 2. **Channel Closure** - Receiver dropped, indicating caller no longer interested.
     async fn coordinate(&self) {
-        let tasks = Arc::new(Semaphore::new(8));
+        let max_tasks = self.crawler.max_concurrent_tasks;
+        let tasks = Arc::new(Semaphore::new(max_tasks));
 
         loop {
             // Check if receiver is still connected before continuing.
@@ -501,8 +550,8 @@ impl CrawlSession {
                 }
                 None => {
                     // No peers in queue - check if we're truly done.
-                    // If all 8 permits are available, no tasks are running.
-                    if tasks.available_permits() == 8 {
+                    // If all permits are available, no tasks are running.
+                    if tasks.available_permits() == max_tasks {
                         info!("Crawler exhausted");
                         break;
                     }
@@ -721,11 +770,13 @@ mod tests {
             default_crawler.protocol_version,
             PeerProtocolVersion::Known(70016)
         );
+        assert_eq!(default_crawler.max_concurrent_tasks, 8);
 
         // Test custom configuration
         let custom_crawler = CrawlerBuilder::new(Network::Testnet)
             .with_transport_policy(TransportPolicy::V2Required)
             .with_protocol_version(70015)
+            .with_max_concurrent_tasks(16)
             .build();
         assert_eq!(custom_crawler.transport_policy, TransportPolicy::V2Required);
         assert_eq!(
@@ -733,5 +784,6 @@ mod tests {
             PeerProtocolVersion::Known(70015)
         );
         assert_eq!(custom_crawler.network, Network::Testnet);
+        assert_eq!(custom_crawler.max_concurrent_tasks, 16);
     }
 }
