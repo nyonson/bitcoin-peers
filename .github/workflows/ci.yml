@@ -18,7 +18,7 @@ jobs:
         with:
           toolchain: nightly
           components: clippy,rustfmt
-      - run: just check ${{ matrix.toolchain }}
+      - run: just check
   test:
     strategy:
       matrix:
