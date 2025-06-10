@@ -53,24 +53,24 @@ pub enum CrawlerMessage {
     /// A peer that has been verified as listening by establishing a connection.
     Listening(Peer),
     /// A peer that failed to connect, perhaps due to non-listening or offline.
-    NotListening(Peer),
+    NonListening(Peer),
 }
 
 impl fmt::Display for CrawlerMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CrawlerMessage::Listening(peer) => write!(f, "Listening: {peer}"),
-            CrawlerMessage::NotListening(peer) => write!(f, "Not listening: {peer}"),
+            CrawlerMessage::Listening(peer) => write!(f, "Listening Peer: {peer}"),
+            CrawlerMessage::NonListening(peer) => write!(f, "Non-listening Peer: {peer}"),
         }
     }
 }
 
-/// A crawler for the Bitcoin peer-to-peer network.
+/// A crawler for the bitcoin peer-to-peer network.
 ///
 /// This crawler connects to bitcoin peers, performs handshakes, and asks for more peers.
 #[derive(Debug, Clone)]
 pub struct Crawler {
-    /// Bitcoin network the [`Crawler`] operates on.
+    /// bitcoin network the [`Crawler`] operates on.
     network: Network,
     /// Custom user agent advertised for connection. Defaults to bitcoin-peers user agent if None.
     user_agent: Option<UserAgent>,
@@ -101,7 +101,7 @@ pub struct Crawler {
 /// ```
 #[derive(Debug, Clone)]
 pub struct CrawlerBuilder {
-    /// Bitcoin network the crawler will operate on.
+    /// bitcoin network the crawler will operate on.
     network: Network,
     /// Custom user agent advertised for connection.
     user_agent: Option<UserAgent>,
@@ -118,7 +118,7 @@ impl CrawlerBuilder {
     ///
     /// # Arguments
     ///
-    /// * `network` - The Bitcoin network to crawl.
+    /// * `network` - The bitcoin network to crawl.
     ///
     /// # Returns
     ///
@@ -173,27 +173,25 @@ impl Crawler {
     ///
     /// # Arguments
     ///
-    /// * `conn` - A connection to a Bitcoin peer
-    /// * `max_wait` - Maximum duration to wait for responses
-    /// * `max_addresses` - Maximum number of addresses to collect before returning early
+    /// * `conn` - A connection to a bitcoin peer.
+    /// * `max_wait` - Maximum duration to wait for responses (defaults to 20 seconds if None).
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node
-    /// * `Err(ConnectionError)` - If an error occurs during the exchange
+    /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node.
+    /// * `Err(ConnectionError)` - If an error occurs during the exchange.
     async fn get_peers(
         &self,
         conn: &mut Connection,
-        max_wait: Duration,
-        max_addresses: usize,
+        max_wait: Option<Duration>,
     ) -> Result<Vec<Peer>, ConnectionError> {
-        // Send GetAddr message
-        conn.send(NetworkMessage::GetAddr).await?;
+        // Apply sensible default.
+        let max_wait = max_wait.unwrap_or(Duration::from_secs(20));
 
+        conn.send(NetworkMessage::GetAddr).await?;
         debug!("Sent getaddr message to peer");
 
         let mut received_addresses = Vec::new();
-        let mut address_count = 0;
         let start_time = Instant::now();
 
         while start_time.elapsed() < max_wait {
@@ -216,51 +214,46 @@ impl Crawler {
                 }
             };
             match message {
+                // Support legacy `Addr` messages as well as `AddrV2`.
                 NetworkMessage::Addr(addresses) => {
                     debug!("Received {} peer addresses", addresses.len());
-                    address_count += addresses.len();
-
-                    // Process each address (tuple of timestamp and Address struct)
                     for (_, addr) in addresses {
-                        // Extract socket address - only IPv4/IPv6 addresses can be converted
                         if let Ok(socket_addr) = addr.socket_addr() {
                             match socket_addr.ip() {
-                                IpAddr::V4(ipv4) => received_addresses.push(
-                                    Peer::new(AddrV2::Ipv4(ipv4), socket_addr.port())
-                                        .with_known_services(addr.services),
-                                ),
-                                IpAddr::V6(ipv6) => received_addresses.push(
-                                    Peer::new(AddrV2::Ipv6(ipv6), socket_addr.port())
-                                        .with_known_services(addr.services),
-                                ),
+                                IpAddr::V4(ipv4) => received_addresses.push(Peer::with_services(
+                                    AddrV2::Ipv4(ipv4),
+                                    socket_addr.port(),
+                                    addr.services,
+                                )),
+                                IpAddr::V6(ipv6) => received_addresses.push(Peer::with_services(
+                                    AddrV2::Ipv6(ipv6),
+                                    socket_addr.port(),
+                                    addr.services,
+                                )),
                             }
                         }
                     }
                 }
                 NetworkMessage::AddrV2(addresses) => {
                     debug!("Received {} peer addresses (v2 format)", addresses.len());
-                    address_count += addresses.len();
                     for addr_msg in addresses {
-                        received_addresses.push(
-                            Peer::new(addr_msg.addr, addr_msg.port)
-                                .with_known_services(addr_msg.services),
-                        );
+                        received_addresses.push(Peer::with_services(
+                            addr_msg.addr,
+                            addr_msg.port,
+                            addr_msg.services,
+                        ));
                     }
                 }
                 _ => {
                     debug!("Received unexpected message in get_peers: {message:?}, ignoring");
                 }
             }
-
-            // If we've received a substantial number of addresses, we can finish early
-            if address_count >= max_addresses {
-                break;
-            }
         }
 
         debug!(
-            "Collected {} total peer addresses",
-            received_addresses.len()
+            "Collected {} peer addresses from {}",
+            received_addresses.len(),
+            conn.peer().await
         );
         Ok(received_addresses)
     }
@@ -276,8 +269,8 @@ impl Crawler {
     ///
     /// # Returns
     ///
-    /// * `Ok(Receiver<PeerMessage>)` - A channel that will receive peer messages
-    /// * `Err(Error)` - If there was an error during crawling setup
+    /// * `Ok(Receiver<PeerMessage>)` - A channel that will receive peer messages.
+    /// * `Err(Error)` - If there was an error during crawling setup.
     pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, ConnectionError> {
         let (crawl_tx, crawl_rx) = mpsc::channel(1000);
         self.discovered_peers.lock().await.push_back(seed);
@@ -321,7 +314,7 @@ impl CrawlSession {
         {
             Ok(conn) => conn,
             Err(_) => {
-                let _ = self.crawl_tx.send(CrawlerMessage::NotListening(peer)).await;
+                let _ = self.crawl_tx.send(CrawlerMessage::NonListening(peer)).await;
                 return;
             }
         };
@@ -334,11 +327,7 @@ impl CrawlSession {
             .send(CrawlerMessage::Listening(peer_info))
             .await;
 
-        if let Ok(peers) = self
-            .crawler
-            .get_peers(&mut conn, Duration::from_secs(20), 1000)
-            .await
-        {
+        if let Ok(peers) = self.crawler.get_peers(&mut conn, None).await {
             let untested_peers = {
                 let tested = self.crawler.tested_peers.lock().await;
                 peers

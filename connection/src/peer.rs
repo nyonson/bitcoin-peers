@@ -100,6 +100,16 @@ impl Peer {
         }
     }
 
+    /// Create a new peer with known services.
+    pub fn with_services(address: AddrV2, port: u16, services: ServiceFlags) -> Self {
+        Peer {
+            address,
+            port,
+            services: PeerServices::Known(services),
+            version: PeerProtocolVersion::Unknown,
+        }
+    }
+
     /// Checks if the peer advertises the specified service.
     ///
     /// # Arguments
@@ -153,5 +163,39 @@ impl fmt::Display for Peer {
                 PeerProtocolVersion::Unknown => "unknown".to_string(),
             }
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn test_peer_with_services() {
+        let addr = AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1));
+        let port = 8333;
+        let services = ServiceFlags::NETWORK;
+
+        let peer = Peer::with_services(addr.clone(), port, services);
+
+        assert_eq!(peer.address, addr);
+        assert_eq!(peer.port, port);
+        assert_eq!(peer.services, PeerServices::Known(services));
+        assert_eq!(peer.version, PeerProtocolVersion::Unknown);
+        assert!(peer.has_service(ServiceFlags::NETWORK));
+    }
+
+    #[test]
+    fn test_peer_constructors_equivalence() {
+        let addr = AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1));
+        let port = 8333;
+        let services = ServiceFlags::NETWORK | ServiceFlags::WITNESS;
+
+        // These should create equivalent peers
+        let peer1 = Peer::with_services(addr.clone(), port, services);
+        let peer2 = Peer::new(addr.clone(), port).with_known_services(services);
+
+        assert_eq!(peer1, peer2);
     }
 }
