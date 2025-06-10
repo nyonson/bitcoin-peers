@@ -165,7 +165,7 @@ async fn negotiate_inbound_transport(
             Ok((Transport::v2(v2), reader, writer))
         }
         Err(e) => {
-            log::debug!("V2 handshake failed for inbound connection: {:?}", e);
+            log::debug!("V2 handshake failed for inbound connection: {e:?}");
 
             match policy {
                 TransportPolicy::V2Required => {
