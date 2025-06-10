@@ -4,6 +4,7 @@ use crate::peer::PeerProtocolVersion;
 use crate::user_agent::UserAgent;
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::ServiceFlags;
+use std::fmt;
 use std::net::Ipv4Addr;
 
 /// Default user agent for bitcoin-peers connections.
@@ -30,6 +31,15 @@ pub enum TransportPolicy {
     V2Preferred,
 }
 
+impl fmt::Display for TransportPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TransportPolicy::V2Required => write!(f, "V2Required"),
+            TransportPolicy::V2Preferred => write!(f, "V2Preferred"),
+        }
+    }
+}
+
 /// Feature negotiation preferences for a connection.
 #[derive(Debug, Clone, Copy)]
 pub struct FeaturePreferences {
@@ -47,6 +57,37 @@ impl Default for FeaturePreferences {
             enable_addrv2: true,
             enable_sendheaders: true,
             enable_wtxidrelay: true,
+        }
+    }
+}
+
+impl fmt::Display for FeaturePreferences {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let features: Vec<&str> = [
+            if self.enable_addrv2 {
+                Some("AddrV2")
+            } else {
+                None
+            },
+            if self.enable_sendheaders {
+                Some("SendHeaders")
+            } else {
+                None
+            },
+            if self.enable_wtxidrelay {
+                Some("WtxidRelay")
+            } else {
+                None
+            },
+        ]
+        .iter()
+        .filter_map(|&opt| opt)
+        .collect();
+
+        if features.is_empty() {
+            write!(f, "none")
+        } else {
+            write!(f, "{}", features.join(", "))
         }
     }
 }
@@ -114,6 +155,26 @@ impl ConnectionConfiguration {
             transport_policy,
             feature_preferences,
         }
+    }
+}
+
+impl fmt::Display for ConnectionConfiguration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let user_agent = match &self.user_agent {
+            Some(ua) => ua.as_str(),
+            None => "none",
+        };
+
+        write!(
+            f,
+            "ConnectionConfiguration {{ protocol: {}, user_agent: \"{}\", services: {}, transport: {}, features: [{}], relay: {} }}",
+            self.protocol_version,
+            user_agent,
+            self.services,
+            self.transport_policy,
+            self.feature_preferences,
+            self.relay
+        )
     }
 }
 

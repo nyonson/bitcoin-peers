@@ -20,7 +20,6 @@ use tokio::sync::{
 };
 use tokio::time::timeout;
 
-/// The bitcoin p2p protocol version number used by this implementation.
 const PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
 
 /// Errors that can occur during crawler configuration.

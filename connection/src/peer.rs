@@ -67,6 +67,15 @@ impl PeerProtocolVersion {
     }
 }
 
+impl fmt::Display for PeerProtocolVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PeerProtocolVersion::Known(version) => write!(f, "Known({version})"),
+            PeerProtocolVersion::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
 /// Represents a bitcoin peer on the network.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Peer {
