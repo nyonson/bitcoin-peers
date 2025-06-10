@@ -14,7 +14,7 @@
 //! ```
 //! use bitcoin::Network;
 //! use bitcoin::p2p::message::NetworkMessage;
-//! use bitcoin_peers::Transport;
+//! use bitcoin_peers_connection::Transport;
 //! use tokio::net::TcpStream;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -229,7 +229,7 @@ impl TransportSender {
 /// ```
 /// # use bitcoin::p2p::Magic;
 /// # use bitcoin::p2p::message::NetworkMessage;
-/// # use bitcoin_peers::Transport;
+/// # use bitcoin_peers_connection::Transport;
 /// # use tokio::net::TcpStream;
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut stream = TcpStream::connect("127.0.0.1:8333").await?;
@@ -246,7 +246,7 @@ impl TransportSender {
 ///
 /// ```rust,no_run
 /// # use bitcoin::p2p::Magic;
-/// # use bitcoin_peers::Transport;
+/// # use bitcoin_peers_connection::Transport;
 /// # use tokio::net::TcpStream;
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let stream = TcpStream::connect("127.0.0.1:8333").await?;

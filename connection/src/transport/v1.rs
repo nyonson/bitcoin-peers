@@ -1,7 +1,7 @@
-//! Bitcoin V1 protocol transport implementation.
+//! Bitcoin v1 protocol transport implementation.
 //!
 //! This module implements the traditional plaintext bitcoin network protocol,
-//! handling message serialization, deserialization, and framing.
+//! handling message serialization and framing.
 
 use crate::transport::TransportError;
 use bitcoin::consensus::encode;
@@ -10,7 +10,7 @@ use bitcoin::p2p::Magic;
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// Size of a Bitcoin message header in bytes.
+/// Size of a bitcoin message header in bytes.
 const HEADER_SIZE: usize = 24;
 /// Offset in the header where the payload length is stored.
 const PAYLOAD_LENGTH_OFFSET: usize = 16;
@@ -87,7 +87,7 @@ impl AsyncV1TransportSender {
     }
 }
 
-/// Implements the receiver half of the bitcoin V1 protocol transport.
+/// Implements the receiver half of the bitcoin v1 protocol transport.
 #[derive(Debug)]
 pub struct AsyncV1TransportReceiver {
     /// The bitcoin network magic bytes.
@@ -162,7 +162,7 @@ impl AsyncV1TransportReceiver {
     }
 }
 
-/// Implements the bitcoin V1 protocol transport.
+/// Implements the bitcoin v1 protocol transport.
 ///
 /// This transport provides methods to send and receive bitcoin protocol messages
 /// over any type that implements `AsyncRead` and `AsyncWrite`.
@@ -174,7 +174,7 @@ impl AsyncV1TransportReceiver {
 /// ```rust
 /// use bitcoin::p2p::Magic;
 /// use bitcoin::p2p::message::NetworkMessage;
-/// use bitcoin_peers::AsyncV1Transport;
+/// use bitcoin_peers_connection::AsyncV1Transport;
 /// use tokio::net::TcpStream;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {

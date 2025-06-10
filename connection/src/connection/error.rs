@@ -5,13 +5,26 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 
+/// Errors that can occur during Bitcoin peer connection establishment and communication.
 #[derive(Debug)]
 pub enum ConnectionError {
+    /// An I/O error occurred during network operations.
     Io(io::Error),
+    /// The transport layer (encryption and serialization) failed.
     TransportFailed(TransportError),
+    /// Bitcoin p2p protocol handling failed.
     ProtocolFailed,
+    /// Remote peer's address type is not supported for connections.
     UnsupportedAddressType,
+    /// Detected a connection loop (attempting to connect to ourselves).
+    ///
+    /// Possible causes:
+    ///
+    /// * Local node's address appears in a peer's address list.
+    /// * Port forwarding issues cause external connections to loopback.
+    /// * Running multiple nodes on the same machine with shared address lists.
     ConnectionLoop,
+    /// V2 encrypted transport required, but could not be established.
     V2TransportRequired,
 }
 

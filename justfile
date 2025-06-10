@@ -19,9 +19,10 @@
 # Unit test suite.
 @_test-unit:
   # Virtual workspace (no code in root) doesn't require the "--workspace" flag, but just being explicit.
-  # "--all-targets" runs any example or bench tests along with standard library ones (unit, integration, and documentation examples).
   # "--all-features" for highest coverage, assuming features are additive so no conflicts.
-  cargo test --workspace --all-targets --all-features
+  # "--all-targets" runs `lib` (unit, integration), `bin`, `test`, `bench`, `example` tests, but not doc code. 
+  cargo test --workspace --all-features --all-targets
+  cargo test --workspace --all-features --doc
 
 # Check code with MSRV compiler.
 @_test-msrv:

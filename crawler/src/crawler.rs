@@ -18,10 +18,6 @@ use tokio::sync::{
 use tokio::time::timeout;
 
 /// The bitcoin p2p protocol version number used by this implementation.
-///
-/// Using 70016 because we're interested in compact block filter support (BIP 158),
-/// even though we don't implement the feature ourselves. This allows nodes to
-/// accurately signal their filter capabilities to the crawler.
 const PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
 
 /// Errors that can occur during crawler configuration.
@@ -107,9 +103,9 @@ pub struct Crawler {
 /// # Example
 ///
 /// ```
-/// # fn main() -> Result<(), bitcoin_peers::CrawlerBuilderError> {
+/// # fn main() -> Result<(), bitcoin_peers_crawler::CrawlerBuilderError> {
 /// use bitcoin::Network;
-/// use bitcoin_peers::CrawlerBuilder;
+/// use bitcoin_peers_crawler::CrawlerBuilder;
 ///
 /// // Create a basic crawler for the Bitcoin mainnet
 /// let basic_crawler = CrawlerBuilder::new(Network::Bitcoin).build();

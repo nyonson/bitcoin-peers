@@ -1,9 +1,8 @@
 //! Bitcoin p2p protocol connection.
 //!
 //! This module provides connection handling for the bitcoin peer-to-peer network.
-//! It implements the bitcoin p2p protocol, including version handshake, message
-//! serialization/deserialization, and protocol-level behaviors like automatic
-//! ping-pong responses.
+//! It covers the bitcoin p2p protocol, including version handshake, message
+//! serialization/deserialization, and feature negotiation.
 //!
 //! # Examples
 //!
@@ -11,7 +10,7 @@
 //!
 //! ```
 //! use bitcoin::Network;
-//! use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+//! use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
 //! use bitcoin::p2p::address::AddrV2;
 //! use bitcoin::p2p::message::NetworkMessage;
 //! use std::net::Ipv4Addr;
@@ -171,7 +170,7 @@ impl std::fmt::Display for ConnectionSender {
 ///
 /// ```
 /// # use bitcoin::Network;
-/// # use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+/// # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
 /// # use bitcoin::p2p::address::AddrV2;
 /// # use std::net::Ipv4Addr;
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -249,7 +248,7 @@ impl Connection {
     ///
     /// ```
     /// # use bitcoin::Network;
-    /// # use bitcoin_peers::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
+    /// # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion};
     /// # use bitcoin::p2p::address::AddrV2;
     /// # use bitcoin::p2p::message::NetworkMessage;
     /// # use std::net::Ipv4Addr;
@@ -341,15 +340,14 @@ impl Connection {
     ///
     /// ```no_run
     /// use bitcoin::Network;
-    /// use bitcoin_peers::{Connection, ConnectionConfiguration, PeerProtocolVersion};
+    /// use bitcoin_peers_connection::{Connection, ConnectionConfiguration, PeerProtocolVersion};
     /// use tokio::net::TcpListener;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let listener = TcpListener::bind("127.0.0.1:8333").await?;
-    /// let config = ConnectionConfiguration::listening(
+    /// let config = ConnectionConfiguration::non_listening(
     ///     PeerProtocolVersion::Known(70016),
     ///     None,
-    ///     8333, // Current block height
     /// );
     ///
     /// loop {
@@ -394,7 +392,6 @@ mod tests {
     use std::net::Ipv4Addr;
     use tokio_test::io::Builder as MockIoBuilder;
 
-    // Helper function to create a test AsyncConnection
     fn create_test_connection<R, W>(
         config: ConnectionConfiguration,
         peer: Peer,
@@ -443,19 +440,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_connection_split() {
-        // Test that split connections work correctly
         let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
         let config =
             ConnectionConfiguration::non_listening(PeerProtocolVersion::Known(70016), None);
 
-        // Create test messages
         let ping_message = NetworkMessage::Ping(456);
         let ping_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, ping_message);
 
         let pong_message = NetworkMessage::Pong(789);
         let pong_bytes = create_raw_message(bitcoin::p2p::Magic::BITCOIN, pong_message);
 
-        // Set up mock reader/writer
         let mock_reader = MockIoBuilder::new()
             .read(&ping_bytes)
             .read(&pong_bytes)
@@ -463,22 +457,15 @@ mod tests {
         let mock_writer = Vec::new();
 
         let connection = create_test_connection(config, peer, mock_reader, mock_writer);
-
-        // Split the connection
         let (mut receiver, mut sender) = connection.into_split();
 
-        // Test receiving with the split receiver
         let received = receiver.receive().await.unwrap();
         match received {
             NetworkMessage::Ping(nonce) => assert_eq!(nonce, 456),
             _ => panic!("Expected Ping message, got {received:?}"),
         }
 
-        // Test that split receiver doesn't automatically respond to pings
-        // Now manually send a pong using the sender
         sender.send(NetworkMessage::Pong(456)).await.unwrap();
-
-        // Receive the next message
         let received = receiver.receive().await.unwrap();
         match received {
             NetworkMessage::Pong(nonce) => assert_eq!(nonce, 789),

@@ -109,38 +109,6 @@ impl ConnectionConfiguration {
             feature_preferences: FeaturePreferences::default(),
         }
     }
-
-    /// Creates a new configuration for a listening node.
-    ///
-    /// This configuration advertises NODE_NETWORK service, uses the provided listening address,
-    /// and relays transactions. It's suitable for full nodes that accept incoming connections.
-    ///
-    /// # Arguments
-    ///
-    /// * `protocol_version` - The protocol version to advertise. Defaults to MIN_PROTOCOL_VERSION if Unknown.
-    /// * `user_agent` - Optional custom user agent string. Defaults to bitcoin-peers default if None.
-    /// * `listening_port` - The port this node is listening on for incoming connections.
-    ///
-    /// # Returns
-    ///
-    /// A new ConnectionConfiguration configured for a listening node.
-    pub fn listening(
-        protocol_version: PeerProtocolVersion,
-        user_agent: Option<String>,
-        listening_port: u16,
-    ) -> Self {
-        Self {
-            protocol_version,
-            user_agent,
-            services: ServiceFlags::NETWORK,
-            sender_address: AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), // Placeholder - should be set to actual public address
-            sender_port: listening_port,
-            start_height: 0, // Should be set to current block height
-            relay: true,
-            transport_policy: TransportPolicy::V2Required,
-            feature_preferences: FeaturePreferences::default(),
-        }
-    }
 }
 
 #[cfg(test)]
