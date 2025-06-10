@@ -1,6 +1,6 @@
 //! Bitcoin p2p protocol version handshake implementation.
 
-use super::configuration::BITCOIN_PEERS_USER_AGENT;
+use super::configuration::default_user_agent;
 use super::{AsyncConnection, ConnectionError};
 use crate::peer::{
     PeerProtocolVersion, PeerServices, ADDRV2_MIN_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
@@ -140,10 +140,10 @@ where
     let receiver_socket_addr = address_to_socket(&peer_lock.address, peer_lock.port);
     let sender_socket_addr = address_to_socket(&config.sender_address, config.sender_port);
 
-    let user_agent = config
-        .user_agent
-        .as_deref()
-        .unwrap_or(BITCOIN_PEERS_USER_AGENT);
+    let user_agent_string = match &config.user_agent {
+        Some(ua) => ua.as_str().to_string(),
+        None => default_user_agent().to_string(),
+    };
 
     let version = VersionMessage {
         version: config.protocol_version.unwrap_or(MIN_PROTOCOL_VERSION),
@@ -152,7 +152,7 @@ where
         receiver: Address::new(&receiver_socket_addr, receiver_services),
         sender: Address::new(&sender_socket_addr, config.services),
         nonce,
-        user_agent: user_agent.to_string(),
+        user_agent: user_agent_string,
         start_height: config.start_height,
         relay: config.relay,
     };

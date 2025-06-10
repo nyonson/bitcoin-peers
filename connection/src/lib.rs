@@ -1,7 +1,7 @@
 mod connection;
 mod peer;
 mod transport;
-pub mod user_agent;
+mod user_agent;
 
 pub use connection::{
     AddrV2State, Connection, ConnectionConfiguration, ConnectionError, ConnectionReceiver,
@@ -14,3 +14,4 @@ pub use transport::{
     AsyncV2TransportReceiver, AsyncV2TransportSender, Transport, TransportError, TransportReceiver,
     TransportSender,
 };
+pub use user_agent::{UserAgent, UserAgentError};

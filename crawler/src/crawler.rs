@@ -2,8 +2,8 @@ use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{
-    user_agent, Connection, ConnectionConfiguration, ConnectionError, FeaturePreferences,
-    TransportPolicy,
+    Connection, ConnectionConfiguration, ConnectionError, FeaturePreferences, TransportPolicy,
+    UserAgent, UserAgentError,
 };
 use bitcoin_peers_connection::{Peer, PeerProtocolVersion};
 use log::{debug, info};
@@ -27,7 +27,7 @@ const PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
 #[derive(Debug, Clone)]
 pub enum CrawlerBuilderError {
     /// User agent doesn't follow the required format.
-    InvalidUserAgent(user_agent::UserAgentError),
+    InvalidUserAgent(UserAgentError),
 }
 
 impl fmt::Display for CrawlerBuilderError {
@@ -73,8 +73,8 @@ impl fmt::Display for CrawlerMessage {
 pub struct Crawler {
     /// Bitcoin network the [`Crawler`] operates on.
     network: Network,
-    /// Custom user agent advertised for connection. Default is `/bitcoin-peers:$VERSION/`.
-    user_agent: Option<String>,
+    /// Custom user agent advertised for connection. Defaults to bitcoin-peers user agent if None.
+    user_agent: Option<UserAgent>,
     /// Peers which need to be tested. VecDeque for FIFO.
     discovered_peers: Arc<Mutex<VecDeque<Peer>>>,
     /// Peers which should no longer be considered.
@@ -105,7 +105,7 @@ pub struct CrawlerBuilder {
     /// Bitcoin network the crawler will operate on.
     network: Network,
     /// Custom user agent advertised for connection.
-    user_agent: Option<String>,
+    user_agent: Option<UserAgent>,
 }
 
 #[derive(Clone)]
@@ -148,9 +148,8 @@ impl CrawlerBuilder {
         mut self,
         user_agent: S,
     ) -> Result<Self, CrawlerBuilderError> {
-        let user_agent = user_agent.into();
-        user_agent::validate_bitcoin_core_format(&user_agent)
-            .map_err(CrawlerBuilderError::InvalidUserAgent)?;
+        let user_agent =
+            UserAgent::new(user_agent.into()).map_err(CrawlerBuilderError::InvalidUserAgent)?;
         self.user_agent = Some(user_agent);
         Ok(self)
     }

@@ -1,16 +1,18 @@
 //! Connection configuration types and constants.
 
 use crate::peer::PeerProtocolVersion;
+use crate::user_agent::UserAgent;
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::ServiceFlags;
 use std::net::Ipv4Addr;
 
-/// User agent string sent in version messages.
+/// Default user agent for bitcoin-peers connections.
 ///
-/// This identifies crawler software to other peers on the network.
+/// This identifies bitcoin-peers software to other peers on the network.
 /// Format follows Bitcoin Core's convention: "/$NAME:$VERSION/".
-pub const BITCOIN_PEERS_USER_AGENT: &str =
-    concat!("/bitcoin-peers:", env!("CARGO_PKG_VERSION"), "/");
+pub fn default_user_agent() -> UserAgent {
+    UserAgent::from_name_version("bitcoin-peers", env!("CARGO_PKG_VERSION"))
+}
 
 /// Non-listening address used in version messages.
 ///
@@ -54,8 +56,8 @@ impl Default for FeaturePreferences {
 pub struct ConnectionConfiguration {
     /// Local minimum supported protocol version.
     pub protocol_version: PeerProtocolVersion,
-    /// Custom user agent advertised for connection. Default is `/bitcoin-peers:$VERSION/`.
-    pub user_agent: Option<String>,
+    /// Custom user agent advertised for connection. Defaults to bitcoin-peers user agent if None.
+    pub user_agent: Option<UserAgent>,
     /// Service flags advertised by this node.
     pub services: ServiceFlags,
     /// Address advertised as the sender in version messages.
@@ -90,7 +92,7 @@ impl ConnectionConfiguration {
     /// * `protocol_version` - The protocol version to advertise. Defaults to MIN_PROTOCOL_VERSION if Unknown.
     /// * `transport_policy` - Should v2 failures fallback to unencrypted v1 transport.
     /// * `feature_preferences` - What features to attempt to enable on connection.
-    /// * `user_agent` - Optional custom user agent string. Defaults to bitcoin-peers default if None.
+    /// * `user_agent` - Optional custom user agent. Defaults to bitcoin-peers user agent if None.
     ///
     /// # Returns
     ///
@@ -99,7 +101,7 @@ impl ConnectionConfiguration {
         protocol_version: PeerProtocolVersion,
         transport_policy: TransportPolicy,
         feature_preferences: FeaturePreferences,
-        user_agent: Option<String>,
+        user_agent: Option<UserAgent>,
     ) -> Self {
         Self {
             protocol_version,

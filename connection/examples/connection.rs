@@ -10,7 +10,7 @@ use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{
     Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
-    TransportPolicy,
+    TransportPolicy, UserAgent,
 };
 use clap::Parser;
 use log::{debug, error, info};
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PeerProtocolVersion::Known(args.protocol_version),
         TransportPolicy::V2Preferred,
         FeaturePreferences::default(),
-        args.user_agent.clone(),
+        args.user_agent.map(|ua| UserAgent::new(ua).unwrap()),
     );
 
     let connection = match Connection::tcp(peer, network, config).await {

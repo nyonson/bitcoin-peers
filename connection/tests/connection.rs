@@ -9,7 +9,7 @@ use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{
     Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
-    TransportPolicy,
+    TransportPolicy, UserAgent,
 };
 use corepc_node as bitcoind;
 use std::net::Ipv4Addr;
@@ -57,7 +57,7 @@ async fn test_connection_v1() {
         PeerProtocolVersion::Known(70016),
         TransportPolicy::V2Preferred,
         FeaturePreferences::default(),
-        Some("bitcoin-peers-test".to_string()),
+        Some(UserAgent::new("/bitcoin-peers-test:1.0/").unwrap()),
     );
 
     // Establish connection (should fall back to V1).
@@ -102,7 +102,7 @@ async fn test_connection_v2() {
         PeerProtocolVersion::Known(70016),
         TransportPolicy::V2Required,
         FeaturePreferences::default(),
-        Some("bitcoin-peers-test".to_string()),
+        Some(UserAgent::new("/bitcoin-peers-test:1.0/").unwrap()),
     );
 
     let mut connection = Connection::tcp(peer, Network::Regtest, config)
@@ -141,7 +141,7 @@ async fn test_connection_split() {
         PeerProtocolVersion::Known(70016),
         TransportPolicy::V2Preferred,
         FeaturePreferences::default(),
-        Some("bitcoin-peers-test".to_string()),
+        Some(UserAgent::new("/bitcoin-peers-test:1.0/").unwrap()),
     );
 
     let connection = Connection::tcp(peer, Network::Regtest, config)

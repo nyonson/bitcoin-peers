@@ -1,9 +1,10 @@
-//! User agent validation and utilities for Bitcoin p2p protocol.
+//! User agent validation and utilities for bitcoin p2p protocol.
 //!
-//! This module provides validation for Bitcoin Core-style user agent strings
-//! and utilities for creating properly formatted user agents.
+//! This module provides a validated `UserAgent` type and utilities for creating
+//! properly formatted user agents following Bitcoin Core conventions.
 
 use std::fmt;
+use std::str::FromStr;
 
 /// Errors that can occur during user agent validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,35 +35,119 @@ impl fmt::Display for UserAgentError {
 
 impl std::error::Error for UserAgentError {}
 
-/// Validates Bitcoin Core-style user agent format: `/name:version/`.
+/// A validated Bitcoin Core-style user agent string.
 ///
-/// Bitcoin Core and most other bitcoin implementations use a specific format
-/// for user agent strings in version messages. This function validates that
-/// a user agent string follows this convention.
-///
-/// # Arguments
-///
-/// * `user_agent` - The user agent string to validate.
-///
-/// # Returns
-///
-/// * `Ok(())` - If the user agent is valid.
-/// * `Err(UserAgentError)` - If the user agent format is invalid.
+/// This type ensures that user agent strings follow the Bitcoin Core convention
+/// of `/name:version/` and are valid at compile time rather than runtime.
 ///
 /// # Example
 ///
 /// ```
-/// use bitcoin_peers_connection::user_agent::validate_bitcoin_core_format;
+/// use bitcoin_peers_connection::UserAgent;
+/// use std::str::FromStr;
 ///
 /// // Valid user agent
-/// assert!(validate_bitcoin_core_format("/bitcoin-peers:0.1.0/").is_ok());
+/// let user_agent = UserAgent::from_str("/bitcoin-peers:0.1.0/").unwrap();
+/// assert_eq!(user_agent.as_str(), "/bitcoin-peers:0.1.0/");
 ///
-/// // Invalid formats
-/// assert!(validate_bitcoin_core_format("bitcoin-peers:0.1.0").is_err());
-/// assert!(validate_bitcoin_core_format("/bitcoin-peers/").is_err());
-/// assert!(validate_bitcoin_core_format("/:0.1.0/").is_err());
+/// // Create with validation
+/// let user_agent = UserAgent::new("/bitcoin-peers:0.1.0/").unwrap();
+///
+/// // Create from components
+/// let user_agent = UserAgent::from_name_version("bitcoin-peers", "0.1.0");
+/// assert_eq!(user_agent.as_str(), "/bitcoin-peers:0.1.0/");
 /// ```
-pub fn validate_bitcoin_core_format(user_agent: &str) -> Result<(), UserAgentError> {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UserAgent(String);
+
+impl UserAgent {
+    /// Creates a new validated user agent from a string.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_agent` - The user agent string to validate
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(UserAgent)` - If the user agent is valid
+    /// * `Err(UserAgentError)` - If the user agent format is invalid
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bitcoin_peers_connection::UserAgent;
+    ///
+    /// let user_agent = UserAgent::new("/bitcoin-peers:0.1.0/").unwrap();
+    /// assert_eq!(user_agent.as_str(), "/bitcoin-peers:0.1.0/");
+    /// ```
+    pub fn new<S: AsRef<str>>(user_agent: S) -> Result<Self, UserAgentError> {
+        let user_agent = user_agent.as_ref();
+        validate_bitcoin_core_format(user_agent)?;
+        Ok(UserAgent(user_agent.to_string()))
+    }
+
+    /// Creates a user agent from name and version components.
+    ///
+    /// This constructor cannot fail since it creates the string in the correct format.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The application name
+    /// * `version` - The application version
+    ///
+    /// # Returns
+    ///
+    /// A validated `UserAgent`
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bitcoin_peers_connection::UserAgent;
+    ///
+    /// let user_agent = UserAgent::from_name_version("bitcoin-peers", "0.1.0");
+    /// assert_eq!(user_agent.as_str(), "/bitcoin-peers:0.1.0/");
+    /// ```
+    pub fn from_name_version<S1: AsRef<str>, S2: AsRef<str>>(name: S1, version: S2) -> Self {
+        let formatted = bitcoin_core_format(name.as_ref(), version.as_ref());
+        UserAgent(formatted)
+    }
+
+    /// Returns the user agent string.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bitcoin_peers_connection::UserAgent;
+    ///
+    /// let user_agent = UserAgent::from_name_version("bitcoin-peers", "0.1.0");
+    /// assert_eq!(user_agent.as_str(), "/bitcoin-peers:0.1.0/");
+    /// ```
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for UserAgent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for UserAgent {
+    type Err = UserAgentError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        UserAgent::new(s)
+    }
+}
+
+impl AsRef<str> for UserAgent {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+fn validate_bitcoin_core_format(user_agent: &str) -> Result<(), UserAgentError> {
     // Check basic format: must start and end with '/' and contain ':'.
     if !user_agent.starts_with('/') || !user_agent.ends_with('/') {
         return Err(UserAgentError::InvalidFormat);
@@ -91,29 +176,7 @@ pub fn validate_bitcoin_core_format(user_agent: &str) -> Result<(), UserAgentErr
     Ok(())
 }
 
-/// Creates a Bitcoin Core-style user agent string.
-///
-/// This function creates a properly formatted user agent string following
-/// the Bitcoin Core convention of `/name:version/`.
-///
-/// # Arguments
-///
-/// * `name` - The application name
-/// * `version` - The application version
-///
-/// # Returns
-///
-/// A formatted user agent string
-///
-/// # Example
-///
-/// ```
-/// use bitcoin_peers_connection::user_agent::bitcoin_core_format;
-///
-/// let user_agent = bitcoin_core_format("bitcoin-peers", "0.1.0");
-/// assert_eq!(user_agent, "/bitcoin-peers:0.1.0/");
-/// ```
-pub fn bitcoin_core_format(name: &str, version: &str) -> String {
+fn bitcoin_core_format(name: &str, version: &str) -> String {
     format!("/{name}:{version}/")
 }
 
@@ -213,5 +276,54 @@ mod tests {
         let version = "0.1.0";
         let user_agent = bitcoin_core_format(name, version);
         assert!(validate_bitcoin_core_format(&user_agent).is_ok());
+
+        let validated = UserAgent::new(&user_agent).unwrap();
+        assert_eq!(validated.as_str(), "/bitcoin-peers:0.1.0/");
+    }
+
+    #[test]
+    fn test_user_agent_new_valid() {
+        let user_agent = UserAgent::new("/bitcoin-peers:0.1.0/").unwrap();
+        assert_eq!(user_agent.as_str(), "/bitcoin-peers:0.1.0/");
+    }
+
+    #[test]
+    fn test_user_agent_new_invalid() {
+        assert!(UserAgent::new("invalid").is_err());
+        assert!(UserAgent::new("/invalid/").is_err());
+        assert!(UserAgent::new("/:version/").is_err());
+        assert!(UserAgent::new("/name:/").is_err());
+    }
+
+    #[test]
+    fn test_user_agent_from_name_version() {
+        let user_agent = UserAgent::from_name_version("bitcoin-peers", "0.1.0");
+        assert_eq!(user_agent.as_str(), "/bitcoin-peers:0.1.0/");
+    }
+
+    #[test]
+    fn test_user_agent_from_str() {
+        let user_agent: UserAgent = "/bitcoin-peers:0.1.0/".parse().unwrap();
+        assert_eq!(user_agent.as_str(), "/bitcoin-peers:0.1.0/");
+    }
+
+    #[test]
+    fn test_user_agent_display() {
+        let user_agent = UserAgent::from_name_version("bitcoin-peers", "0.1.0");
+        assert_eq!(format!("{user_agent}"), "/bitcoin-peers:0.1.0/");
+    }
+
+    #[test]
+    fn test_user_agent_equality() {
+        let ua1 = UserAgent::from_name_version("bitcoin-peers", "0.1.0");
+        let ua2 = UserAgent::new("/bitcoin-peers:0.1.0/").unwrap();
+        assert_eq!(ua1, ua2);
+    }
+
+    #[test]
+    fn test_user_agent_as_ref() {
+        let user_agent = UserAgent::from_name_version("bitcoin-peers", "0.1.0");
+        let s: &str = user_agent.as_ref();
+        assert_eq!(s, "/bitcoin-peers:0.1.0/");
     }
 }
