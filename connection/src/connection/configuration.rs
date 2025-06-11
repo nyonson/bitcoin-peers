@@ -6,6 +6,7 @@ use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::ServiceFlags;
 use std::fmt;
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 /// Default user agent for bitcoin-peers connections.
 ///
@@ -21,6 +22,9 @@ pub fn default_user_agent() -> UserAgent {
 /// and should not be advertised to other nodes.
 pub const NON_LISTENING_ADDRESS: AddrV2 = AddrV2::Ipv4(Ipv4Addr::new(0, 0, 0, 0));
 pub const NON_LISTENING_PORT: u16 = 0;
+
+/// Default timeout for connection establishment.
+pub const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Policy for transport protocol selection during connection establishment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +122,8 @@ pub struct ConnectionConfiguration {
     pub transport_policy: TransportPolicy,
     /// Feature negotiation preferences.
     pub feature_preferences: FeaturePreferences,
+    /// Timeout for connection establishment.
+    pub connection_timeout: Duration,
 }
 
 impl ConnectionConfiguration {
@@ -154,7 +160,42 @@ impl ConnectionConfiguration {
             relay: false,
             transport_policy,
             feature_preferences,
+            connection_timeout: DEFAULT_CONNECTION_TIMEOUT,
         }
+    }
+
+    /// Set the timeout for connection establishment.
+    ///
+    /// This timeout applies to the initial connection attempt.
+    /// The default is 10 seconds, which provides a good balance between
+    /// allowing enough time for high-latency networks while failing
+    /// quickly on unreachable peers.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - The maximum time to wait for connection establishment.
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// # use bitcoin_peers_connection::{ConnectionConfiguration, TransportPolicy, FeaturePreferences};
+    /// # use bitcoin_peers_connection::PeerProtocolVersion;
+    ///
+    /// let config = ConnectionConfiguration::non_listening(
+    ///     PeerProtocolVersion::Known(70016),
+    ///     TransportPolicy::V2Preferred,
+    ///     FeaturePreferences::default(),
+    ///     None
+    /// ).with_connection_timeout(Duration::from_secs(30));
+    /// ```
+    pub fn with_connection_timeout(mut self, timeout: Duration) -> Self {
+        self.connection_timeout = timeout;
+        self
     }
 }
 
@@ -188,5 +229,23 @@ mod tests {
         assert!(prefs.enable_addrv2);
         assert!(prefs.enable_sendheaders);
         assert!(prefs.enable_wtxidrelay);
+    }
+
+    #[test]
+    fn test_connection_configuration_timeout() {
+        // Test default timeout
+        let config = ConnectionConfiguration::non_listening(
+            PeerProtocolVersion::Known(70016),
+            TransportPolicy::V2Preferred,
+            FeaturePreferences::default(),
+            None,
+        );
+        assert_eq!(config.connection_timeout, DEFAULT_CONNECTION_TIMEOUT);
+        assert_eq!(config.connection_timeout, Duration::from_secs(10));
+
+        // Test custom timeout
+        let custom_timeout = Duration::from_secs(30);
+        let config_with_timeout = config.with_connection_timeout(custom_timeout);
+        assert_eq!(config_with_timeout.connection_timeout, custom_timeout);
     }
 }

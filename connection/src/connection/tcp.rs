@@ -59,8 +59,11 @@ fn configure_tcp_stream(stream: &TcpStream) -> Result<(), ConnectionError> {
 }
 
 /// Helper function to establish TCP connection with timeout and nodelay.
-async fn establish_tcp_connection(socket_addr: SocketAddr) -> Result<TcpStream, ConnectionError> {
-    match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(socket_addr)).await {
+async fn establish_tcp_connection(
+    socket_addr: SocketAddr,
+    timeout: Duration,
+) -> Result<TcpStream, ConnectionError> {
+    match tokio::time::timeout(timeout, TcpStream::connect(socket_addr)).await {
         Ok(Ok(stream)) => {
             configure_tcp_stream(&stream)?;
             Ok(stream)
@@ -79,6 +82,7 @@ async fn negotiate_outbound_transport(
     network: Network,
     peer: &Peer,
     policy: TransportPolicy,
+    connection_timeout: Duration,
 ) -> Result<(Transport, OwnedReadHalf, OwnedWriteHalf), ConnectionError> {
     let peer_supports_v2 = match peer.services {
         PeerServices::Unknown => true,
@@ -89,7 +93,7 @@ async fn negotiate_outbound_transport(
     // 1. Connection configuration policy allows for v1 fallback (V2Preferred).
     // 2. Peer explicitly doesn't advertise v2 support.
     if !peer_supports_v2 && matches!(policy, TransportPolicy::V2Preferred) {
-        let stream = establish_tcp_connection(socket_addr).await?;
+        let stream = establish_tcp_connection(socket_addr, connection_timeout).await?;
         let (reader, writer) = stream.into_split();
         log::info!(
             "Using v1 plaintext connection to {:?} (no P2P_V2 flag)",
@@ -98,7 +102,7 @@ async fn negotiate_outbound_transport(
         return Ok((Transport::v1(network.magic()), reader, writer));
     }
 
-    let stream = establish_tcp_connection(socket_addr).await?;
+    let stream = establish_tcp_connection(socket_addr, connection_timeout).await?;
     let (mut reader, mut writer) = stream.into_split();
 
     match AsyncProtocol::new(
@@ -128,7 +132,7 @@ async fn negotiate_outbound_transport(
                 }
                 TransportPolicy::V2Preferred => {
                     // Need fresh connection for v1 since v2 protocol probably caused disconnection.
-                    let stream = establish_tcp_connection(socket_addr).await?;
+                    let stream = establish_tcp_connection(socket_addr, connection_timeout).await?;
                     let (reader, writer) = stream.into_split();
 
                     log::info!("Using v1 plaintext connection to {:?}", peer.address);
@@ -186,17 +190,16 @@ async fn negotiate_inbound_transport(
 
 /// Establish a TCP connection to a bitcoin peer and perform the handshake.
 ///
-/// This function handles:
-/// 1. TCP connection establishment with timeout
-/// 2. TCP socket configuration (nodelay)
-/// 3. Transport protocol negotiation (tries v2, falls back to v1)
-/// 4. Version handshake
+/// 1. TCP connection establishment with timeout.
+/// 2. TCP socket configuration (nodelay).
+/// 3. Transport protocol negotiation (tries v2, falls back to v1).
+/// 4. Version handshake.
 ///
 /// # Arguments
 ///
-/// * `peer` - The bitcoin peer to connect to
-/// * `network` - The bitcoin network to use
-/// * `configuration` - Configuration for the connection
+/// * `peer` - The bitcoin peer to connect to.
+/// * `network` - The bitcoin network to use.
+/// * `configuration` - Configuration for the connection.
 ///
 /// # Returns
 ///
@@ -215,9 +218,14 @@ pub async fn connect(
     let socket_addr = SocketAddr::new(ip_addr, peer.port);
 
     // Negotiate transport based on peer capabilities and configuration policy.
-    let (transport, reader, writer) =
-        negotiate_outbound_transport(socket_addr, network, &peer, configuration.transport_policy)
-            .await?;
+    let (transport, reader, writer) = negotiate_outbound_transport(
+        socket_addr,
+        network,
+        &peer,
+        configuration.transport_policy,
+        configuration.connection_timeout,
+    )
+    .await?;
 
     let mut connection = AsyncConnection::new(peer, configuration, transport, reader, writer);
     super::handshake::perform_handshake(&mut connection).await?;

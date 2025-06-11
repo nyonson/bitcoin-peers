@@ -6,7 +6,7 @@ mod user_agent;
 pub use connection::{
     AddrV2State, Connection, ConnectionConfiguration, ConnectionError, ConnectionReceiver,
     ConnectionSender, ConnectionState, FeaturePreferences, SendHeadersState, TransportPolicy,
-    WtxidRelayState,
+    WtxidRelayState, DEFAULT_CONNECTION_TIMEOUT,
 };
 pub use peer::{Peer, PeerProtocolVersion, PeerServices};
 pub use transport::{
