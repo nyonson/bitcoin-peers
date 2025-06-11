@@ -45,7 +45,10 @@ NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
 
 # Test that minimum and maximum versions of dependency contraints are valid.
 @_test-constraints:
+  # Ensure that the workspace code works with dependencies at both extremes. This checks
+  # that we are not unintentionally using new feautures of a dependency or removed ones.
   # Skipping "--all-targets" for these checks since tests and examples are not relevant for a library consumer.
+  # Enabling "--all-features" so all dependencies are checked.
   # Clear any previously resolved versions and re-resolve to the minimums.
   rm -f Cargo.lock
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features -Z direct-minimal-versions
