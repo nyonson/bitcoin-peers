@@ -88,15 +88,17 @@ NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
     echo "publish: CHANGELOG.md entry missing for v{{version}}"; exit 1; fi
   if ! grep -q '^version = "{{version}}"' {{crate}}/Cargo.toml; then \
     echo "publish: Cargo.toml version mismatch"; exit 1; fi
-  # Final confirmation.
+  # Final confirmation, exit 1 is used to kill the script.
   printf "Publishing {{crate}} v{{version}}, do you want to continue? [y/N]: "; \
-  read -r response; \
-  # Exit 1 to kill the script.
-  [ "$response" = "y" ] || [ "$response" = "Y" ] || { echo "publish: Cancelled"; exit 1; }
+  read response; \
+  case "$response" in \
+    [yY]) ;; \
+    *) echo "publish: Cancelled"; exit 1 ;; \
+  esac
   # Publish the tag.
   echo "publish: Adding release tag {{crate}}-v{{version}} and pushing to {{remote}}..."
   # Using "-a" annotated tag over a lightweight tag for robust history.
   git tag -a {{crate}}-v{{version}} -m "Release {{crate}} v{{version}}"
   git push {{remote}} {{crate}}-v{{version}}
   # Publish the crate.
-  cargo publish -p {{crate}}
+  cargo publish -p bitcoin-peers-{{crate}}
