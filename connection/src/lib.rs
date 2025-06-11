@@ -1,7 +1,7 @@
 //! Bitcoin peer connection and transport handling.
 //!
 //! This crate provides a robust implementation of the bitcoin peer-to-peer network protocol,
-//! supporting both the legacy v1 protocol and the modern encrypted v2 protocol (BIP-324).
+//! supporting both the legacy v1 transport and the modern encrypted v2 transport (BIP-324).
 //! It handles the complete connection lifecycle including handshake, feature negotiation,
 //! and message serialization,
 //!
@@ -10,7 +10,6 @@
 //! * **Dual Transport Support**: Seamlessly handles both v1 (legacy) and v2 (BIP-324 encrypted) transports.
 //! * **Feature Negotiation**: Automatic negotiation of protocol features like compact blocks and address relay.
 //! * **Split Architecture**: Connections can be split into separate sender/receiver halves for concurrent use.
-//! * **Async/Await**: Built on tokio for high-performance asynchronous I/O.
 //!
 //! # Quick Start
 //!
