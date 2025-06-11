@@ -1,4 +1,4 @@
-//! Bitcoin V2 protocol transport implementation.
+//! Bitcoin v2 transport implementation.
 //!
 //! This module is a light wrapper around the encryption and serialization.
 
@@ -54,7 +54,7 @@ impl AsyncV2Transport {
     }
 }
 
-/// Implements the receiver half of the bitcoin V2 protocol transport.
+/// Implements the receiver half of the bitcoin v2 protocol transport.
 pub struct AsyncV2TransportReceiver {
     reader: bip324::AsyncProtocolReader,
 }
@@ -68,7 +68,7 @@ impl std::fmt::Debug for AsyncV2TransportReceiver {
 }
 
 impl AsyncV2TransportReceiver {
-    /// Creates a new receiver from a BIP-324 AsyncProtocolReader.
+    /// Creates a new receiver from a BIP-324 [`AsyncProtocolReader`].
     pub fn new(reader: bip324::AsyncProtocolReader) -> Self {
         Self { reader }
     }
@@ -88,7 +88,7 @@ impl AsyncV2TransportReceiver {
     }
 }
 
-/// Implements the sender half of the bitcoin V2 protocol transport.
+/// Implements the sender half of the bitcoin v2 protocol transport.
 pub struct AsyncV2TransportSender {
     writer: bip324::AsyncProtocolWriter,
 }
@@ -102,7 +102,7 @@ impl std::fmt::Debug for AsyncV2TransportSender {
 }
 
 impl AsyncV2TransportSender {
-    /// Creates a new sender from a BIP-324 AsyncProtocolWriter.
+    /// Creates a new sender from a BIP-324 [`AsyncProtocolWriter`].
     pub fn new(writer: bip324::AsyncProtocolWriter) -> Self {
         Self { writer }
     }

@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 
-/// Errors that can occur during Bitcoin peer connection establishment and communication.
+/// Errors that can occur during peer connection establishment and communication.
 #[derive(Debug)]
 pub enum ConnectionError {
     /// An I/O error occurred during network operations.
