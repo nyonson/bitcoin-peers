@@ -15,7 +15,6 @@ bitcoin-peers-connection = { version = "0.1.0", path = "../connection" }
 bitcoin = { version = "0.32.4" }
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 log = { version = "0.4.8" }
-futures = { version = "0.3" }
 
 [dev-dependencies]
 clap = { version = "4.5.39", features = ["derive"] }

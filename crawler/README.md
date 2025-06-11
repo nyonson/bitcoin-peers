@@ -16,4 +16,4 @@ Crawl across the bitcoin network beginning from a seed peer. Check out [the exam
 
 ## Performance
 
-On a consumer-grade laptop, memory usage remains constant no matter the `max_concurrent_tasks` setting, but CPU usage spikes do occur as you turn that knob up. 
+On a consumer-grade laptop, memory usage remains relatively constant no matter the `max_concurrent_tasks` setting, but CPU usage spikes do occur as you turn that knob up. 
