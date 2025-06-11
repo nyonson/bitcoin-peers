@@ -547,7 +547,7 @@ impl CrawlSession {
                 }
             }
             Err(e) => {
-                debug!("Failed to get peers from {}: {}", peer, e);
+                debug!("Failed to get peers from {peer}: {e}");
                 TaskResult::NoPeersFound
             }
         }
@@ -603,7 +603,7 @@ impl CrawlSession {
                             // Wait for a task to complete
                             if let Some(result) = task_done_rx.recv().await {
                                 active_tasks -= 1;
-                                debug!("Task completed with result: {:?}", result);
+                                debug!("Task completed with result: {result:?}");
                             }
                         }
 
@@ -624,7 +624,7 @@ impl CrawlSession {
                 // Task completed
                 Some(result) = task_done_rx.recv() => {
                     active_tasks -= 1;
-                    debug!("Task completed with result: {:?}", result);
+                    debug!("Task completed with result: {result:?}");
 
                     // Check if we're done: no more tasks running
                     if active_tasks == 0 {
