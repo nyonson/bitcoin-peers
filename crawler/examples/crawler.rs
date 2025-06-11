@@ -22,6 +22,10 @@ struct Args {
     #[arg(short, long)]
     user_agent: Option<String>,
 
+    /// Maximum number of concurrent tasks for crawling.
+    #[arg(short, long, default_value = "8")]
+    concurrent_tasks: usize,
+
     /// Log level.
     #[arg(short, long, default_value = "info")]
     log_level: String,
@@ -74,6 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log::debug!("Using custom user agent: {user_agent}");
         builder = builder.with_user_agent(user_agent)?;
     }
+
+    log::debug!("Using {} concurrent tasks", args.concurrent_tasks);
+    builder = builder.with_max_concurrent_tasks(args.concurrent_tasks);
+
     let crawler = builder.build();
 
     let seed = Peer::new(addr, args.port);

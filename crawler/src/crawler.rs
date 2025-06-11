@@ -8,19 +8,13 @@ use bitcoin_peers_connection::{
 use log::{debug, info};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
-use std::{
-    collections::{HashSet, VecDeque},
-    fmt,
-    sync::Arc,
-};
-use tokio::sync::{
-    mpsc::{self, Receiver},
-    Mutex, Semaphore,
-};
+use std::{collections::HashSet, fmt};
+use tokio::sync::mpsc::{self, Receiver};
 use tokio::time::timeout;
 
 const DEFAULT_PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
 const DEFAULT_MAX_CONCURRENT_TASKS: usize = 8;
+const DEFAULT_PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Internal trait for bitcoin peer connections that can send and receive messages.
 ///
@@ -30,6 +24,102 @@ trait PeerConnection {
     async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError>;
     async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError>;
     async fn peer(&self) -> Peer;
+
+    /// Requests peer addresses from this connection by sending a getaddr message.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer_tx` - Channel to send discovered peers through.
+    /// * `peer_timeout` - Maximum duration to wait for responses.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(usize)` - The number of peer addresses sent through the channel.
+    /// * `Err(ConnectionError)` - If an error occurs during the exchange.
+    async fn get_peers(
+        &mut self,
+        peer_tx: &mpsc::Sender<Vec<Peer>>,
+        peer_timeout: Duration,
+    ) -> Result<usize, ConnectionError> {
+        self.send(NetworkMessage::GetAddr).await?;
+        debug!("Sent getaddr message to peer");
+
+        let mut peer_count = 0;
+        let start_time = Instant::now();
+
+        while start_time.elapsed() < peer_timeout {
+            // Wait for a message with a short timeout.
+            let timeout_duration = std::cmp::min(
+                Duration::from_secs(5),
+                peer_timeout.saturating_sub(start_time.elapsed()),
+            );
+
+            let message = match timeout(timeout_duration, self.receive()).await {
+                Ok(Ok(message)) => message,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    // Timeout on reading - if we have some addresses, consider it done.
+                    if peer_count > 0 {
+                        break;
+                    }
+                    // Otherwise continue waiting for the overall timeout.
+                    continue;
+                }
+            };
+
+            let mut peers_batch = Vec::new();
+
+            match message {
+                // Support legacy `Addr` messages as well as `AddrV2`.
+                NetworkMessage::Addr(addresses) => {
+                    debug!("Received {} peer addresses", addresses.len());
+                    for (_, addr) in addresses {
+                        if let Ok(socket_addr) = addr.socket_addr() {
+                            let peer = match socket_addr.ip() {
+                                IpAddr::V4(ipv4) => Peer::with_services(
+                                    AddrV2::Ipv4(ipv4),
+                                    socket_addr.port(),
+                                    addr.services,
+                                ),
+                                IpAddr::V6(ipv6) => Peer::with_services(
+                                    AddrV2::Ipv6(ipv6),
+                                    socket_addr.port(),
+                                    addr.services,
+                                ),
+                            };
+                            peers_batch.push(peer);
+                            peer_count += 1;
+                        }
+                    }
+                }
+                NetworkMessage::AddrV2(addresses) => {
+                    debug!("Received {} peer addresses (v2 format)", addresses.len());
+                    for addr_msg in addresses {
+                        let peer =
+                            Peer::with_services(addr_msg.addr, addr_msg.port, addr_msg.services);
+                        peers_batch.push(peer);
+                        peer_count += 1;
+                    }
+                }
+                _ => {
+                    debug!("Received unexpected message in get_peers: {message:?}, ignoring");
+                }
+            }
+
+            // Send the batch if we collected any peers
+            if !peers_batch.is_empty() && peer_tx.send(peers_batch).await.is_err() {
+                // Receiver dropped, stop processing
+                break;
+            }
+        }
+
+        debug!(
+            "Sent {} peer addresses from {} through channel",
+            peer_count,
+            self.peer().await
+        );
+        Ok(peer_count)
+    }
 }
 
 /// Implementation of PeerConnection for the Connection type from bitcoin-peers-connection.
@@ -105,10 +195,8 @@ pub struct Crawler {
     protocol_version: PeerProtocolVersion,
     /// Maximum number of concurrent connection tasks.
     max_concurrent_tasks: usize,
-    /// Peers which need to be tested. VecDeque for FIFO.
-    discovered_peers: Arc<Mutex<VecDeque<Peer>>>,
-    /// Peers which should no longer be considered.
-    tested_peers: Arc<Mutex<HashSet<Peer>>>,
+    /// Timeout for peer operations like requesting addresses.
+    peer_timeout: Duration,
 }
 
 /// Builder for creating a customized [`Crawler`] instance.
@@ -145,6 +233,21 @@ pub struct CrawlerBuilder {
     protocol_version: PeerProtocolVersion,
     /// Maximum number of concurrent connection tasks.
     max_concurrent_tasks: usize,
+    /// Timeout for peer operations like requesting addresses.
+    peer_timeout: Duration,
+}
+
+/// Result of processing a single peer in the crawler.
+#[derive(Debug, Clone)]
+enum TaskResult {
+    /// Successfully connected and found peers.
+    FoundPeers,
+    /// Successfully connected but no peers received.
+    NoPeersFound,
+    /// Failed to connect to the peer.
+    ConnectionFailed,
+    /// Task exited early due to channel closure.
+    ChannelClosed,
 }
 
 /// Internal coordinator for a crawling session.
@@ -155,15 +258,15 @@ pub struct CrawlerBuilder {
 ///
 /// # Architecture
 ///
-/// The session follows a producer-consumer pattern:
+/// The session follows a producer-consumer pattern with lockless communication:
 /// * **Coordinator** (`coordinate()`) - Manages the work queue and spawns processing tasks.
 /// * **Processors** (`process()`) - Handle individual peer connections and discovery.
-/// * **Communication** - Uses an MPSC channel to send results back to the caller.
+/// * **Communication** - Uses MPSC channels for all inter-task communication.
 ///
 /// # Concurrency Control
 ///
-/// * **Semaphore** - Limits concurrent connections (configurable, defaults to 8).
-/// * **Shared State** - Peer queues and tested sets are protected by `Arc<Mutex<_>>`.
+/// * **Task Counting** - Tracks active tasks and enforces configured maximum.
+/// * **Channels** - Lockless communication between tasks via MPSC channels.
 /// * **Graceful Shutdown** - Monitors channel closure for early termination.
 #[derive(Clone)]
 struct CrawlSession {
@@ -190,6 +293,7 @@ impl CrawlerBuilder {
             transport_policy: TransportPolicy::V2Preferred,
             protocol_version: DEFAULT_PROTOCOL_VERSION,
             max_concurrent_tasks: DEFAULT_MAX_CONCURRENT_TASKS,
+            peer_timeout: DEFAULT_PEER_TIMEOUT,
         }
     }
 
@@ -269,6 +373,24 @@ impl CrawlerBuilder {
         self
     }
 
+    /// Set the timeout for peer operations.
+    ///
+    /// This timeout applies to operations like requesting peer addresses after
+    /// establishing a connection. A longer timeout may help on slow networks,
+    /// while a shorter timeout can speed up crawling when peers are unresponsive.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - Maximum time to wait for peer responses (defaults to 20 seconds).
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining.
+    pub fn with_peer_timeout(mut self, timeout: Duration) -> Self {
+        self.peer_timeout = timeout;
+        self
+    }
+
     /// Build the crawler with the configured options.
     ///
     /// # Returns
@@ -281,102 +403,12 @@ impl CrawlerBuilder {
             transport_policy: self.transport_policy,
             protocol_version: self.protocol_version,
             max_concurrent_tasks: self.max_concurrent_tasks,
-            discovered_peers: Arc::new(Mutex::new(VecDeque::new())),
-            tested_peers: Arc::new(Mutex::new(HashSet::new())),
+            peer_timeout: self.peer_timeout,
         }
     }
 }
 
 impl Crawler {
-    /// Requests peer addresses from a connected node by sending a getaddr message and collects the responses.
-    ///
-    /// # Arguments
-    ///
-    /// * `conn` - A connection to a bitcoin peer.
-    /// * `max_wait` - Maximum duration to wait for responses (defaults to 20 seconds if None).
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Vec<Peer>)` - A vector of peer information received from the node.
-    /// * `Err(ConnectionError)` - If an error occurs during the exchange.
-    async fn get_peers<C: PeerConnection>(
-        &self,
-        conn: &mut C,
-        max_wait: Option<Duration>,
-    ) -> Result<Vec<Peer>, ConnectionError> {
-        // Apply sensible default.
-        let max_wait = max_wait.unwrap_or(Duration::from_secs(20));
-
-        conn.send(NetworkMessage::GetAddr).await?;
-        debug!("Sent getaddr message to peer");
-
-        let mut received_addresses = Vec::new();
-        let start_time = Instant::now();
-
-        while start_time.elapsed() < max_wait {
-            // Wait for a message with a short timeout.
-            let timeout_duration = std::cmp::min(
-                Duration::from_secs(5),
-                max_wait.saturating_sub(start_time.elapsed()),
-            );
-
-            let message = match timeout(timeout_duration, conn.receive()).await {
-                Ok(Ok(message)) => message,
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    // Timeout on reading - if we have some addresses, consider it done.
-                    if !received_addresses.is_empty() {
-                        break;
-                    }
-                    // Otherwise continue waiting for the overall timeout.
-                    continue;
-                }
-            };
-            match message {
-                // Support legacy `Addr` messages as well as `AddrV2`.
-                NetworkMessage::Addr(addresses) => {
-                    debug!("Received {} peer addresses", addresses.len());
-                    for (_, addr) in addresses {
-                        if let Ok(socket_addr) = addr.socket_addr() {
-                            match socket_addr.ip() {
-                                IpAddr::V4(ipv4) => received_addresses.push(Peer::with_services(
-                                    AddrV2::Ipv4(ipv4),
-                                    socket_addr.port(),
-                                    addr.services,
-                                )),
-                                IpAddr::V6(ipv6) => received_addresses.push(Peer::with_services(
-                                    AddrV2::Ipv6(ipv6),
-                                    socket_addr.port(),
-                                    addr.services,
-                                )),
-                            }
-                        }
-                    }
-                }
-                NetworkMessage::AddrV2(addresses) => {
-                    debug!("Received {} peer addresses (v2 format)", addresses.len());
-                    for addr_msg in addresses {
-                        received_addresses.push(Peer::with_services(
-                            addr_msg.addr,
-                            addr_msg.port,
-                            addr_msg.services,
-                        ));
-                    }
-                }
-                _ => {
-                    debug!("Received unexpected message in get_peers: {message:?}, ignoring");
-                }
-            }
-        }
-
-        debug!(
-            "Collected {} peer addresses from {}",
-            received_addresses.len(),
-            conn.peer().await
-        );
-        Ok(received_addresses)
-    }
-
     /// Crawl the bitcoin network starting from a seed peer.
     ///
     /// This method returns a channel that will receive peer messages as peers are verified.
@@ -399,7 +431,6 @@ impl Crawler {
     /// * `Err(Error)` - If there was an error during crawling setup.
     pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, ConnectionError> {
         let (crawl_tx, crawl_rx) = mpsc::channel(1000);
-        self.discovered_peers.lock().await.push_back(seed);
 
         let session = CrawlSession {
             crawler: self.clone(),
@@ -407,7 +438,7 @@ impl Crawler {
         };
 
         tokio::spawn(async move {
-            session.coordinate().await;
+            session.coordinate(seed).await;
         });
 
         Ok(crawl_rx)
@@ -419,35 +450,31 @@ impl CrawlSession {
     ///
     /// # Process Flow
     ///
-    /// 1. **Deduplication** - Checks if peer already tested, skips if so.
-    /// 2. **Connection** - Attempts TCP connection and bitcoin handshake.
-    /// 3. **Classification** - Reports peer as `Listening` or `NonListening`.
-    /// 4. **Discovery** - If connected, requests peer addresses via `getaddr`.
-    /// 5. **Queue New Peers** - Adds untested peers to discovery queue.
+    /// 1. **Connection** - Attempts TCP connection and bitcoin handshake.
+    /// 2. **Classification** - Reports peer as `Listening` or `NonListening`.
+    /// 3. **Discovery** - If connected, requests peer addresses via `getaddr`.
+    /// 4. **Channel Send** - Sends discovered peers through discovery channel.
+    ///
+    /// # Returns
+    ///
+    /// A `TaskResult` indicating what happened during processing.
     ///
     /// # Error Handling
     ///
-    /// * **Connection failures** - Peer marked as non-listening, no retry.
-    /// * **Channel closure** - Early return if receiver disconnected.
-    /// * **Address request failures** - Logged but not fatal, peer still marked as listening.
+    /// * **Connection failures** - Peer marked as non-listening, returns `ConnectionFailed`.
+    /// * **Channel closure** - Early return with `ChannelClosed`.
+    /// * **Address request failures** - Logged but not fatal, returns `NoPeersFound`.
     ///
     /// # Concurrency
     ///
-    /// Multiple instances of this method run concurrently (controlled by semaphore).
-    /// Shared state access is serialized through mutex locks.
+    /// This method is completely lockless - all communication happens via channels.
     ///
     /// # Arguments
     ///
     /// * `peer` - The peer to test and potentially discover addresses from.
-    async fn process(&self, peer: Peer) {
-        // Check and mark tested so we don't re-visit this session.
-        {
-            let mut tested = self.crawler.tested_peers.lock().await;
-            if tested.contains(&peer) {
-                return;
-            }
-            tested.insert(peer.clone());
-        }
+    /// * `peer_discovery_tx` - Channel to send discovered peers through.
+    async fn process(&self, peer: Peer, peer_discovery_tx: mpsc::Sender<Vec<Peer>>) -> TaskResult {
+        debug!("Processing peer {peer:?}");
 
         let mut conn = match Connection::tcp(
             peer.clone(),
@@ -470,9 +497,9 @@ impl CrawlSession {
                     .is_err()
                 {
                     // Receiver dropped, stop processing.
-                    return;
+                    return TaskResult::ChannelClosed;
                 }
-                return;
+                return TaskResult::ConnectionFailed;
             }
         };
 
@@ -487,23 +514,24 @@ impl CrawlSession {
             .is_err()
         {
             // Receiver dropped, stop processing.
-            return;
+            return TaskResult::ChannelClosed;
         }
 
-        if let Ok(peers) = self.crawler.get_peers(&mut conn, None).await {
-            let untested_peers = {
-                let tested = self.crawler.tested_peers.lock().await;
-                peers
-                    .into_iter()
-                    .filter(|p| !tested.contains(p))
-                    .collect::<Vec<_>>()
-            };
-
-            if !untested_peers.is_empty() {
-                let mut discovered = self.crawler.discovered_peers.lock().await;
-                for new_peer in untested_peers {
-                    discovered.push_back(new_peer);
+        // Request peers and send them directly through the discovery channel
+        match conn
+            .get_peers(&peer_discovery_tx, self.crawler.peer_timeout)
+            .await
+        {
+            Ok(peer_count) => {
+                if peer_count > 0 {
+                    TaskResult::FoundPeers
+                } else {
+                    TaskResult::NoPeersFound
                 }
+            }
+            Err(e) => {
+                debug!("Failed to get peers from {}: {}", peer, e);
+                TaskResult::NoPeersFound
             }
         }
     }
@@ -511,52 +539,81 @@ impl CrawlSession {
     /// Coordinates the crawling process by managing the work queue and task scheduling.
     ///
     /// This is the main control loop that orchestrates the entire crawling session.
-    /// It continuously pulls peers from the discovery queue and spawns processing tasks
+    /// It continuously pulls peers from the discovery channel and spawns processing tasks
     /// until the crawl is complete or terminated.
-    ///
-    /// # Scheduling Algorithm
-    ///
-    /// * **Work Queue** - FIFO processing of discovered peers.
-    /// * **Concurrency Limit** - Semaphore restricts to configured concurrent connections.
-    /// * **Completion Detection** - Terminates when queue empty and no tasks running.
-    /// * **Early Termination** - Stops immediately if output channel closed.
     ///
     /// # Termination Conditions
     ///
-    /// 1. **Natural Completion** - No more peers to process and all tasks finished.
+    /// 1. **Natural Completion** - No more peers in channel and all tasks finished.
     /// 2. **Channel Closure** - Receiver dropped, indicating caller no longer interested.
-    async fn coordinate(&self) {
-        let max_tasks = self.crawler.max_concurrent_tasks;
-        let tasks = Arc::new(Semaphore::new(max_tasks));
+    async fn coordinate(&self, seed: Peer) {
+        // Channel to track discovered peers to process.
+        let (peer_discovery_tx, mut peer_discovery_rx) = mpsc::channel(1000);
+        // Channel to track task completion.
+        let (task_done_tx, mut task_done_rx) =
+            mpsc::channel::<TaskResult>(self.crawler.max_concurrent_tasks);
+
+        // Prime the pump with the seed peer.
+        if peer_discovery_tx.send(vec![seed]).await.is_err() {
+            debug!("Failed to send seed peer");
+            return;
+        }
+
+        // Track which peers we have asked.
+        let mut tested_peers = HashSet::new();
+        // Number of in-flight tasks.
+        let mut active_tasks = 0;
 
         loop {
-            // Check if receiver is still connected before continuing.
+            // Check if caller hung up before continuing.
             if self.crawl_tx.is_closed() {
                 debug!("Receiver disconnected, stopping crawler");
                 break;
             }
 
-            let peer = self.crawler.discovered_peers.lock().await.pop_front();
-            match peer {
-                Some(peer) => {
-                    // We have work to do - spawn a task to process this peer.
-                    // Acquire_owned so that it can be moved into the spawned task.
-                    let permit = tasks.clone().acquire_owned().await.unwrap();
-                    let task = self.clone();
-                    tokio::spawn(async move {
-                        task.process(peer).await;
-                        drop(permit);
-                    });
+            // Wait for something to happen
+            tokio::select! {
+                // New peers discovered
+                Some(peers) = peer_discovery_rx.recv() => {
+                    for peer in peers {
+                        // Skip if already tested
+                        if !tested_peers.insert(peer.clone()) {
+                            continue;
+                        }
+
+                        // Wait if we're at capacity
+                        while active_tasks >= self.crawler.max_concurrent_tasks {
+                            // Wait for a task to complete
+                            if let Some(result) = task_done_rx.recv().await {
+                                active_tasks -= 1;
+                                debug!("Task completed with result: {:?}", result);
+                            }
+                        }
+
+                        // Spawn a new task
+                        let session = self.clone();
+                        let discovery_tx = peer_discovery_tx.clone();
+                        let done_tx = task_done_tx.clone();
+
+                        active_tasks += 1;
+                        tokio::spawn(async move {
+                            let result = session.process(peer, discovery_tx).await;
+                            // Signal completion with result
+                            let _ = done_tx.send(result).await;
+                        });
+                    }
                 }
-                None => {
-                    // No peers in queue - check if we're truly done.
-                    // If all permits are available, no tasks are running.
-                    if tasks.available_permits() == max_tasks {
-                        info!("Crawler exhausted");
+
+                // Task completed
+                Some(result) = task_done_rx.recv() => {
+                    active_tasks -= 1;
+                    debug!("Task completed with result: {:?}", result);
+
+                    // Check if we're done: no more tasks running
+                    if active_tasks == 0 {
+                        info!("Crawler exhausted - all peers processed");
                         break;
                     }
-                    // Otherwise, tasks are still running and may discover new peers.
-                    // Continue looping to check for new work.
                 }
             }
         }
@@ -666,7 +723,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_peers_with_mock() {
-        let crawler = CrawlerBuilder::new(Network::Bitcoin).build();
         let mut mock_conn = MockPeerConnection::new();
 
         // Add some test addresses
@@ -683,13 +739,12 @@ mod tests {
             ),
         ]);
 
-        let result = crawler
-            .get_peers(&mut mock_conn, Some(Duration::from_millis(100)))
-            .await;
+        let (tx, mut rx) = mpsc::channel(10);
+        let result = mock_conn.get_peers(&tx, Duration::from_millis(100)).await;
 
         assert!(result.is_ok());
-        let peers = result.unwrap();
-        assert_eq!(peers.len(), 2);
+        let peer_count = result.unwrap();
+        assert_eq!(peer_count, 2);
 
         // Verify a getaddr message was sent
         assert_eq!(mock_conn.sent_messages.len(), 1);
@@ -698,31 +753,31 @@ mod tests {
             NetworkMessage::GetAddr
         ));
 
-        // Verify peer details
-        assert_eq!(
-            peers[0].address,
-            AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1))
-        );
-        assert_eq!(peers[0].port, 8333);
-        assert!(peers[0].has_service(ServiceFlags::NETWORK));
+        // Verify peers were sent through channel as a batch
+        let peers_batch = rx.recv().await.unwrap();
+        assert_eq!(peers_batch.len(), 2);
 
-        assert_eq!(peers[1].address, AddrV2::Ipv4(Ipv4Addr::new(10, 0, 0, 1)));
-        assert!(peers[1].has_service(ServiceFlags::WITNESS));
+        let peer1 = &peers_batch[0];
+        assert_eq!(peer1.address, AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1)));
+        assert_eq!(peer1.port, 8333);
+        assert!(peer1.has_service(ServiceFlags::NETWORK));
+
+        let peer2 = &peers_batch[1];
+        assert_eq!(peer2.address, AddrV2::Ipv4(Ipv4Addr::new(10, 0, 0, 1)));
+        assert!(peer2.has_service(ServiceFlags::WITNESS));
     }
 
     #[tokio::test]
     async fn test_get_peers_timeout() {
-        let crawler = CrawlerBuilder::new(Network::Bitcoin).build();
         let mut mock_conn = MockPeerConnection::new();
         // Don't add any messages - should timeout
 
-        let result = crawler
-            .get_peers(&mut mock_conn, Some(Duration::from_millis(50)))
-            .await;
+        let (tx, mut rx) = mpsc::channel(10);
+        let result = mock_conn.get_peers(&tx, Duration::from_millis(50)).await;
 
         assert!(result.is_ok());
-        let peers = result.unwrap();
-        assert_eq!(peers.len(), 0); // Should get empty list on timeout
+        let peer_count = result.unwrap();
+        assert_eq!(peer_count, 0); // Should get 0 peers on timeout
 
         // Verify a getaddr message was sent
         assert_eq!(mock_conn.sent_messages.len(), 1);
@@ -730,11 +785,15 @@ mod tests {
             mock_conn.sent_messages[0],
             NetworkMessage::GetAddr
         ));
+
+        // No peers should be in channel
+        assert!(tokio::time::timeout(Duration::from_millis(10), rx.recv())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn test_get_peers_connection_error() {
-        let crawler = CrawlerBuilder::new(Network::Bitcoin).build();
         let mut mock_conn = MockPeerConnection::new();
 
         // Add a connection error that will be returned after getaddr is sent
@@ -743,9 +802,8 @@ mod tests {
             "Connection lost",
         )));
 
-        let result = crawler
-            .get_peers(&mut mock_conn, Some(Duration::from_millis(100)))
-            .await;
+        let (tx, _rx) = mpsc::channel(10);
+        let result = mock_conn.get_peers(&tx, Duration::from_millis(100)).await;
 
         // Should return the error
         assert!(result.is_err());
@@ -771,12 +829,14 @@ mod tests {
             PeerProtocolVersion::Known(70016)
         );
         assert_eq!(default_crawler.max_concurrent_tasks, 8);
+        assert_eq!(default_crawler.peer_timeout, Duration::from_secs(20));
 
         // Test custom configuration
         let custom_crawler = CrawlerBuilder::new(Network::Testnet)
             .with_transport_policy(TransportPolicy::V2Required)
             .with_protocol_version(70015)
             .with_max_concurrent_tasks(16)
+            .with_peer_timeout(Duration::from_secs(5))
             .build();
         assert_eq!(custom_crawler.transport_policy, TransportPolicy::V2Required);
         assert_eq!(
@@ -785,5 +845,6 @@ mod tests {
         );
         assert_eq!(custom_crawler.network, Network::Testnet);
         assert_eq!(custom_crawler.max_concurrent_tasks, 16);
+        assert_eq!(custom_crawler.peer_timeout, Duration::from_secs(5));
     }
 }
