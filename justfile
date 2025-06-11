@@ -1,17 +1,17 @@
 # Every commit on the master branch is expected to have working `check` and `test-*` recipes.
 #
 # The recipes make heavy use of `rustup`'s toolchain syntax (e.g. `cargo +nightly`). `rustup` is
-# require to be installed on the system in order to intercept the `cargo` commands and
-# to install and use the appropriate toolchain with components. 
+# required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
 
 NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
 
 @_default:
     just --list
 
-# Quick check of the code including format and lint rules. 
+# Light check including format and lint rules. 
 @check toolchain=NIGHTLY_TOOLCHAIN:
   # Default to the nightly toolchain for modern format and lint rules.
+
   # Ensure the toolchain is installed and has the necessary components.
   rustup component add --toolchain {{toolchain}} rustfmt clippy
   # Cargo's wrapper for rustfmt predates workspaces, so uses the "--all" flag instead of "--workspaces".
@@ -29,24 +29,30 @@ NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
 
 # Unit test suite.
 @_test-unit:
+  # Run all tests defined in the workspace.
+
   # Virtual workspace (no code in root) doesn't require the "--workspace" flag, but just being explicit.
   # "--all-features" for highest coverage, assuming features are additive so no conflicts.
   # "--all-targets" runs `lib` (unit, integration), `bin`, `test`, `bench`, `example` tests, but not doc code. 
   cargo test --workspace --all-features --all-targets
   cargo test --workspace --all-features --doc
 
-# Check code with MSRV compiler.
+# Check the MSRV.
 @_test-msrv:
+  # Ensure that the code works with the stated minimum supported rust version (MSRV).
+  # This implicitly relys on using the V3 resolver which is MSRV-aware.
+  
   # Handles creating sandboxed environments to ensure no newer binaries sneak in.
   cargo install cargo-msrv@0.18.4
   # MSRV tool doesn't have cargo's workspace flag behavior yet, need to verify each package separately.
   cargo msrv verify --manifest-path connection/Cargo.toml --all-features
   cargo msrv verify --manifest-path crawler/Cargo.toml --all-features
 
-# Test that minimum and maximum versions of dependency contraints are valid.
+# Check minimum and maximum dependency contraints.
 @_test-constraints:
-  # Ensure that the workspace code works with dependencies at both extremes. This checks
+  # Ensure that the workspace code works with dependency versions at both extremes. This checks
   # that we are not unintentionally using new feautures of a dependency or removed ones.
+
   # Skipping "--all-targets" for these checks since tests and examples are not relevant for a library consumer.
   # Enabling "--all-features" so all dependencies are checked.
   # Clear any previously resolved versions and re-resolve to the minimums.

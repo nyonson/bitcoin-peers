@@ -12,10 +12,8 @@
 
 ## About
 
-Crawl across the bitcoin network beginning from a seed peer.
-
-Check out [examples/](examples) for usage.
+Crawl across the bitcoin network beginning from a seed peer. Check out [the example](examples/crawler.rs) for usage.
 
 ## Performance
 
- 
+On a consumer-grade laptop, memory usage remains constant no matter the `max_concurrent_tasks` setting, but CPU usage spikes do occur as you turn that knob up. 
