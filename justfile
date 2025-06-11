@@ -1,8 +1,16 @@
+# Every commit on the master branch is expected to have working `check` and `test-*` recipes.
+#
+# The recipes make heavy use of `rustup`'s toolchain syntax (e.g. `cargo +nightly`). `rustup` is
+# require to be installed on the system in order to intercept the `cargo` commands and
+# to auto-download and use the appropirate toolchain. 
+
+NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
+
 @_default:
     just --list
 
 # Quick check of the code. Default to nightly toolchain for modern format and lint rules.
-@check toolchain="nightly":
+@check toolchain=NIGHTLY_TOOLCHAIN:
   # Cargo's wrapper for rustfmt predates workspaces, so uses the "--all" flag instead of "--workspaces".
   cargo +{{toolchain}} fmt --check --all
   # Lint all workspace members. Enable all feature flags. Check all targets (tests, examples) along with library code. Turn warnings into errors.
@@ -36,7 +44,7 @@
 @_test-min-versions:
   rm -f Cargo.lock
   # Skipping "--all-targets" since tests and examples are not relevant for a library consumer.
-  cargo +nightly check --workspace --all-features -Z direct-minimal-versions
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features -Z direct-minimal-versions
 
 # Try an example: connection, crawler.
 @try example ip port="8333" log="info":
