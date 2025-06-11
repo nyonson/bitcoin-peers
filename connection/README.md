@@ -5,6 +5,8 @@
   </p>
 
   <p>
+    <a href="https://crates.io/crates/bitcoin-peers-connection"><img alt="crates.io" src="https://img.shields.io/crates/v/bitcoin-peers-connection.svg"/></a>
+    <a href="https://docs.rs/bitcoin-peers-connection"><img alt="Docs" src="https://docs.rs/bitcoin-peers-connection/badge.svg"/></a>
     <a href="https://github.com/nyonson/bitcoin-peers/blob/master/LICENSE"><img alt="CC0 1.0 Universal Licensed" src="https://img.shields.io/badge/license-CC0--1.0-blue.svg"/></a>
     <a href="https://blog.rust-lang.org/2022/08/11/Rust-1.63.0/"><img alt="Rustc Version 1.63.0+" src="https://img.shields.io/badge/rustc-1.63.0%2B-lightgrey.svg"/></a>
   </p>
