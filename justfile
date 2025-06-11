@@ -75,8 +75,10 @@ NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
 @_try-connection ip port="8333" log="info":
     cargo run -p bitcoin-peers-connection --example connection -- --address {{ip}} --port {{port}} --log-level {{log}}
  
-# Publish a new version. Requires write privileges on upsream repository and crates.io.
+# Publish a new version.
 @publish crate version remote="upstream":
+  # Requires write privileges on upsream repository and crates.io.
+   
   # Publish guardrails: be on a clean master, updated changelog, updated manifest.
   if ! git diff --quiet || ! git diff --cached --quiet; then \
     echo "publish: Uncommitted changes"; exit 1; fi
