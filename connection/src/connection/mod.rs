@@ -51,9 +51,7 @@ mod io;
 mod state;
 mod tcp;
 
-pub use self::configuration::{
-    ConnectionConfiguration, FeaturePreferences, TransportPolicy, DEFAULT_CONNECTION_TIMEOUT,
-};
+pub use self::configuration::{ConnectionConfiguration, FeaturePreferences, TransportPolicy};
 pub use error::ConnectionError;
 pub use io::{AsyncConnection, AsyncConnectionReceiver, AsyncConnectionSender};
 pub use state::{AddrV2State, ConnectionState, SendHeadersState, WtxidRelayState};

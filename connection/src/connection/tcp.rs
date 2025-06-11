@@ -12,9 +12,7 @@ use bip324::{AsyncProtocol, Role};
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::ServiceFlags;
 use bitcoin::Network;
-use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
@@ -58,22 +56,11 @@ fn configure_tcp_stream(stream: &TcpStream) -> Result<(), ConnectionError> {
     Ok(())
 }
 
-/// Helper function to establish TCP connection with timeout and nodelay.
-async fn establish_tcp_connection(
-    socket_addr: SocketAddr,
-    timeout: Duration,
-) -> Result<TcpStream, ConnectionError> {
-    match tokio::time::timeout(timeout, TcpStream::connect(socket_addr)).await {
-        Ok(Ok(stream)) => {
-            configure_tcp_stream(&stream)?;
-            Ok(stream)
-        }
-        Ok(Err(e)) => Err(ConnectionError::Io(e)),
-        Err(_) => Err(ConnectionError::Io(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Connection attempt timed out",
-        ))),
-    }
+/// Helper function to establish TCP connection and configure it for Bitcoin P2P.
+async fn establish_tcp_connection(socket_addr: SocketAddr) -> Result<TcpStream, ConnectionError> {
+    let stream = TcpStream::connect(socket_addr).await?;
+    configure_tcp_stream(&stream)?;
+    Ok(stream)
 }
 
 /// Negotiate transport protocol for outbound TCP connection.
@@ -82,7 +69,6 @@ async fn negotiate_outbound_transport(
     network: Network,
     peer: &Peer,
     policy: TransportPolicy,
-    connection_timeout: Duration,
 ) -> Result<(Transport, OwnedReadHalf, OwnedWriteHalf), ConnectionError> {
     let peer_supports_v2 = match peer.services {
         PeerServices::Unknown => true,
@@ -93,7 +79,7 @@ async fn negotiate_outbound_transport(
     // 1. Connection configuration policy allows for v1 fallback (V2Preferred).
     // 2. Peer explicitly doesn't advertise v2 support.
     if !peer_supports_v2 && matches!(policy, TransportPolicy::V2Preferred) {
-        let stream = establish_tcp_connection(socket_addr, connection_timeout).await?;
+        let stream = establish_tcp_connection(socket_addr).await?;
         let (reader, writer) = stream.into_split();
         log::info!(
             "Using v1 plaintext connection to {:?} (no P2P_V2 flag)",
@@ -102,7 +88,7 @@ async fn negotiate_outbound_transport(
         return Ok((Transport::v1(network.magic()), reader, writer));
     }
 
-    let stream = establish_tcp_connection(socket_addr, connection_timeout).await?;
+    let stream = establish_tcp_connection(socket_addr).await?;
     let (mut reader, mut writer) = stream.into_split();
 
     match AsyncProtocol::new(
@@ -132,7 +118,7 @@ async fn negotiate_outbound_transport(
                 }
                 TransportPolicy::V2Preferred => {
                     // Need fresh connection for v1 since v2 protocol probably caused disconnection.
-                    let stream = establish_tcp_connection(socket_addr, connection_timeout).await?;
+                    let stream = establish_tcp_connection(socket_addr).await?;
                     let (reader, writer) = stream.into_split();
 
                     log::info!("Using v1 plaintext connection to {:?}", peer.address);
@@ -190,10 +176,38 @@ async fn negotiate_inbound_transport(
 
 /// Establish a TCP connection to a bitcoin peer and perform the handshake.
 ///
-/// 1. TCP connection establishment with timeout.
+/// This function handles:
+/// 1. TCP connection establishment.
 /// 2. TCP socket configuration (nodelay).
 /// 3. Transport protocol negotiation (tries v2, falls back to v1).
 /// 4. Version handshake.
+///
+/// # Timeouts
+///
+/// This function does not enforce any connection timeout. Callers should wrap
+/// the call with `tokio::time::timeout` if a timeout is desired:
+///
+/// ```no_run
+/// # use bitcoin::Network;
+/// # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy, FeaturePreferences};
+/// # use bitcoin::p2p::address::AddrV2;
+/// # use std::net::Ipv4Addr;
+/// # use std::time::Duration;
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
+/// # let config = ConnectionConfiguration::non_listening(
+/// #     PeerProtocolVersion::Known(70016),
+/// #     TransportPolicy::V2Required,
+/// #     FeaturePreferences::default(),
+/// #     None,
+/// # );
+/// let connection = tokio::time::timeout(
+///     Duration::from_secs(30),
+///     Connection::tcp(peer, Network::Bitcoin, config)
+/// ).await??;
+/// # Ok(())
+/// # }
+/// ```
 ///
 /// # Arguments
 ///
@@ -218,14 +232,9 @@ pub async fn connect(
     let socket_addr = SocketAddr::new(ip_addr, peer.port);
 
     // Negotiate transport based on peer capabilities and configuration policy.
-    let (transport, reader, writer) = negotiate_outbound_transport(
-        socket_addr,
-        network,
-        &peer,
-        configuration.transport_policy,
-        configuration.connection_timeout,
-    )
-    .await?;
+    let (transport, reader, writer) =
+        negotiate_outbound_transport(socket_addr, network, &peer, configuration.transport_policy)
+            .await?;
 
     let mut connection = AsyncConnection::new(peer, configuration, transport, reader, writer);
     super::handshake::perform_handshake(&mut connection).await?;

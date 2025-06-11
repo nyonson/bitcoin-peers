@@ -1,6 +1,6 @@
 //! Demonstrates Connection functionality including Display/Debug traits and split connections.
 //!
-//! * How to establish a peer connection.
+//! * How to establish a peer connection with timeout handling.
 //! * Using Display and Debug traits to inspect connection state.
 //! * Splitting a connection into separate receiver and sender halves.
 //! * Concurrent reading and writing operations with ping/pong messages.
@@ -111,16 +111,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.user_agent.map(|ua| UserAgent::new(ua).unwrap()),
     );
 
-    let connection = match Connection::tcp(peer, network, config).await {
-        Ok(conn) => {
+    // Establish connection with a 30-second timeout.
+    // This is important for network operations that might hang indefinitely.
+    info!("Attempting connection to {peer} with 30s timeout...");
+    let connection = match tokio::time::timeout(
+        Duration::from_secs(30),
+        Connection::tcp(peer, network, config),
+    )
+    .await
+    {
+        Ok(Ok(conn)) => {
             info!("Successfully connected and completed handshake");
             info!("Connection Display: {conn}");
             debug!("Connection Debug: {conn:?}");
 
             conn
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             error!("Failed to connect: {e}");
+            return Ok(());
+        }
+        Err(_) => {
+            error!("Connection attempt timed out after 30 seconds");
             return Ok(());
         }
     };

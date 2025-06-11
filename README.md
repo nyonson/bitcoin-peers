@@ -12,7 +12,7 @@
 
 ## About
 
-Bitcoin Peers is a set of libraries for interacting with and analyzing peers of a bitcoin network. The libraries take a semi-opinionated approach by requiring the use of the *tokio* asynchronous runtime. However, they are designed to compose into higher level utilities.
+Bitcoin Peers is a set of libraries for interacting with and analyzing peers of a bitcoin network. The libraries take a semi-opinionated approach by requiring the use of the *tokio* asynchronous runtime. However, they have minimal dependencies beyond that and are designed to compose into higher level utilities.
 
 ### Modules
 

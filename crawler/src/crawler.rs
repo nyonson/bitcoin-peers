@@ -195,7 +195,16 @@ pub struct Crawler {
     protocol_version: PeerProtocolVersion,
     /// Maximum number of concurrent connection tasks.
     max_concurrent_tasks: usize,
-    /// Timeout for peer operations like requesting addresses.
+    /// Timeout for peer operations.
+    ///
+    /// This timeout applies to all peer-related operations.
+    ///
+    /// * Connection establishment (TCP connect + handshake)
+    /// * Requesting peer addresses after establishing a connection
+    /// * Waiting for responses to protocol messages
+    ///
+    /// A longer timeout may help on slow networks, while a shorter timeout
+    /// can speed up crawling when peers are unresponsive.
     peer_timeout: Duration,
 }
 
@@ -233,7 +242,7 @@ pub struct CrawlerBuilder {
     protocol_version: PeerProtocolVersion,
     /// Maximum number of concurrent connection tasks.
     max_concurrent_tasks: usize,
-    /// Timeout for peer operations like requesting addresses.
+    /// Timeout for peer operations.
     peer_timeout: Duration,
 }
 
@@ -375,13 +384,18 @@ impl CrawlerBuilder {
 
     /// Set the timeout for peer operations.
     ///
-    /// This timeout applies to operations like requesting peer addresses after
-    /// establishing a connection. A longer timeout may help on slow networks,
-    /// while a shorter timeout can speed up crawling when peers are unresponsive.
+    /// This timeout applies to all peer-related operations.
+    ///
+    /// * Connection establishment (TCP connect + handshake)
+    /// * Requesting peer addresses after establishing a connection
+    /// * Waiting for responses to protocol messages
+    ///
+    /// A longer timeout may help on slow networks, while a shorter timeout
+    /// can speed up crawling when peers are unresponsive.
     ///
     /// # Arguments
     ///
-    /// * `timeout` - Maximum time to wait for peer responses (defaults to 20 seconds).
+    /// * `timeout` - Maximum time to wait for peer operations (defaults to 20 seconds).
     ///
     /// # Returns
     ///
@@ -476,20 +490,23 @@ impl CrawlSession {
     async fn process(&self, peer: Peer, peer_discovery_tx: mpsc::Sender<Vec<Peer>>) -> TaskResult {
         debug!("Processing peer {peer:?}");
 
-        let mut conn = match Connection::tcp(
-            peer.clone(),
-            self.crawler.network,
-            ConnectionConfiguration::non_listening(
-                self.crawler.protocol_version,
-                self.crawler.transport_policy,
-                FeaturePreferences::default(),
-                self.crawler.user_agent.clone(),
+        let mut conn = match timeout(
+            self.crawler.peer_timeout,
+            Connection::tcp(
+                peer.clone(),
+                self.crawler.network,
+                ConnectionConfiguration::non_listening(
+                    self.crawler.protocol_version,
+                    self.crawler.transport_policy,
+                    FeaturePreferences::default(),
+                    self.crawler.user_agent.clone(),
+                ),
             ),
         )
         .await
         {
-            Ok(conn) => conn,
-            Err(_) => {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(_)) | Err(_) => {
                 if self
                     .crawl_tx
                     .send(CrawlerMessage::NonListening(peer))
