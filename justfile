@@ -12,7 +12,6 @@ NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
 # Quick check of the code including format and lint rules. 
 @check toolchain=NIGHTLY_TOOLCHAIN:
   # Default to the nightly toolchain for modern format and lint rules.
-
   # Ensure the toolchain is installed and has the necessary components.
   rustup component add --toolchain {{toolchain}} rustfmt clippy
   # Cargo's wrapper for rustfmt predates workspaces, so uses the "--all" flag instead of "--workspaces".
@@ -44,11 +43,16 @@ NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
   cargo msrv verify --manifest-path connection/Cargo.toml --all-features
   cargo msrv verify --manifest-path crawler/Cargo.toml --all-features
 
-# Test that minimum versions of dependency contraints are valid.
+# Test that minimum and maximum versions of dependency contraints are valid.
 @_test-constraints:
+  # Skipping "--all-targets" for these checks since tests and examples are not relevant for a library consumer.
+  # Clear any previously resolved versions and re-resolve to the minimums.
   rm -f Cargo.lock
-  # Skipping "--all-targets" since tests and examples are not relevant for a library consumer.
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features -Z direct-minimal-versions
+  # Clear again and check the maximums by ignoring any rust-version caps. 
+  rm -f Cargo.lock
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --ignore-rust-version
+  rm -f Cargo.lock
 
 # Try an example: connection, crawler.
 @try example ip port="8333" log="info":
