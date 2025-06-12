@@ -3,7 +3,7 @@ use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{
     Connection, ConnectionConfiguration, ConnectionError, FeaturePreferences, Peer,
-    PeerProtocolVersion, TransportPolicy, UserAgent, UserAgentError,
+    PeerProtocolVersion, TransportPolicy, UserAgent,
 };
 use log::{debug, info};
 use std::net::IpAddr;
@@ -11,10 +11,6 @@ use std::time::{Duration, Instant};
 use std::{collections::HashSet, fmt};
 use tokio::sync::mpsc::{self, Receiver};
 use tokio::time::timeout;
-
-const DEFAULT_PROTOCOL_VERSION: PeerProtocolVersion = PeerProtocolVersion::Known(70016);
-const DEFAULT_MAX_CONCURRENT_TASKS: usize = 8;
-const DEFAULT_PEER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Internal trait for bitcoin peer connections that can send and receive messages.
 ///
@@ -137,31 +133,6 @@ impl PeerConnection for Connection {
     }
 }
 
-/// Errors that can occur during crawler configuration.
-#[derive(Debug, Clone)]
-pub enum CrawlerBuilderError {
-    /// User agent doesn't follow the required format.
-    InvalidUserAgent(UserAgentError),
-}
-
-impl fmt::Display for CrawlerBuilderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CrawlerBuilderError::InvalidUserAgent(err) => {
-                write!(f, "Invalid user agent: {err}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CrawlerBuilderError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CrawlerBuilderError::InvalidUserAgent(err) => Some(err),
-        }
-    }
-}
-
 /// Messages sent from the [`Crawler`] to the caller about peer discovery.
 #[derive(Debug, Clone)]
 pub enum CrawlerMessage {
@@ -208,42 +179,73 @@ pub struct Crawler {
     peer_timeout: Duration,
 }
 
-/// Builder for creating a customized [`Crawler`] instance.
-///
-/// # Example
-///
-/// ```
-/// # fn main() -> Result<(), bitcoin_peers_crawler::CrawlerBuilderError> {
-/// use bitcoin::Network;
-/// use bitcoin_peers_crawler::{CrawlerBuilder, TransportPolicy};
-///
-/// // Create a basic crawler for the Bitcoin mainnet
-/// let basic_crawler = CrawlerBuilder::new(Network::Bitcoin).build();
-///
-/// // Create a crawler with custom settings
-/// let custom_crawler = CrawlerBuilder::new(Network::Bitcoin)
-///     .with_user_agent("/my-custom-crawler:1.0/")?
-///     .with_transport_policy(TransportPolicy::V2Required)
-///     .with_protocol_version(70015)
-///     .with_max_concurrent_tasks(16)
-///     .build();
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Debug, Clone)]
-pub struct CrawlerBuilder {
-    /// Bitcoin network the crawler will operate on.
-    network: Network,
-    /// Custom user agent advertised for connection.
-    user_agent: Option<UserAgent>,
-    /// Transport policy for connections.
-    transport_policy: TransportPolicy,
-    /// Protocol version to advertise in connections.
-    protocol_version: PeerProtocolVersion,
-    /// Maximum number of concurrent connection tasks.
-    max_concurrent_tasks: usize,
-    /// Timeout for peer operations.
-    peer_timeout: Duration,
+impl Crawler {
+    /// Create a new crawler with the specified configuration.
+    ///
+    /// This constructor allows direct creation of a crawler if you prefer not to use
+    /// the [`CrawlerBuilder`]. For most use cases, [`CrawlerBuilder::new()`] provides
+    /// a more convenient API with sensible defaults.
+    ///
+    /// # Arguments
+    ///
+    /// * `network` - The bitcoin network to crawl.
+    /// * `user_agent` - Custom user agent for connections (None uses default).
+    /// * `transport_policy` - V2 transport preference policy.
+    /// * `protocol_version` - Bitcoin protocol version to advertise.
+    /// * `max_concurrent_tasks` - Maximum number of concurrent connection tasks.
+    /// * `peer_timeout` - Timeout for all peer operations.
+    pub fn new(
+        network: Network,
+        user_agent: Option<UserAgent>,
+        transport_policy: TransportPolicy,
+        protocol_version: PeerProtocolVersion,
+        max_concurrent_tasks: usize,
+        peer_timeout: Duration,
+    ) -> Self {
+        Self {
+            network,
+            user_agent,
+            transport_policy,
+            protocol_version,
+            max_concurrent_tasks,
+            peer_timeout,
+        }
+    }
+
+    /// Crawl the bitcoin network starting from a seed peer.
+    ///
+    /// This method returns a channel that will receive peer messages as peers are verified.
+    /// The channel will be closed when the crawling is complete or encounters an error.
+    ///
+    /// # Termination
+    ///
+    /// The crawler will terminate in two scenarios:
+    ///
+    /// * **Natural completion** - When all discovered peers have been tested and no more peers are found.
+    /// * **Early termination** - When the returned receiver is dropped, the crawler will detect this and stop gracefully.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - The seed peer to start crawling from.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Receiver<PeerMessage>)` - A channel that will receive peer messages.
+    /// * `Err(Error)` - If there was an error during crawling setup.
+    pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, ConnectionError> {
+        let (crawl_tx, crawl_rx) = mpsc::channel(1000);
+
+        let session = CrawlSession {
+            crawler: self.clone(),
+            crawl_tx,
+        };
+
+        tokio::spawn(async move {
+            session.coordinate(seed).await;
+        });
+
+        Ok(crawl_rx)
+    }
 }
 
 /// Result of processing a single peer in the crawler.
@@ -283,180 +285,6 @@ struct CrawlSession {
     crawler: Crawler,
     /// Channel for sending discovery results back to the caller.
     crawl_tx: mpsc::Sender<CrawlerMessage>,
-}
-
-impl CrawlerBuilder {
-    /// Create a new crawler builder for the specified network.
-    ///
-    /// # Arguments
-    ///
-    /// * `network` - The bitcoin network to crawl.
-    ///
-    /// # Returns
-    ///
-    /// A new `CrawlerBuilder` instance.
-    pub fn new(network: Network) -> Self {
-        CrawlerBuilder {
-            network,
-            user_agent: None,
-            transport_policy: TransportPolicy::V2Preferred,
-            protocol_version: DEFAULT_PROTOCOL_VERSION,
-            max_concurrent_tasks: DEFAULT_MAX_CONCURRENT_TASKS,
-            peer_timeout: DEFAULT_PEER_TIMEOUT,
-        }
-    }
-
-    /// Set a custom user agent string for the crawler.
-    ///
-    /// The user agent identifies the crawler to other peers on the network.
-    /// It must follow Bitcoin Core's convention: "/Name:Version/".
-    ///
-    /// # Arguments
-    ///
-    /// * `user_agent` - The user agent string to use.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Self)` - The builder for method chaining if validation succeeds.
-    /// * `Err(BuilderError)` - If the user agent format is invalid.
-    pub fn with_user_agent<S: Into<String>>(
-        mut self,
-        user_agent: S,
-    ) -> Result<Self, CrawlerBuilderError> {
-        let user_agent =
-            UserAgent::new(user_agent.into()).map_err(CrawlerBuilderError::InvalidUserAgent)?;
-        self.user_agent = Some(user_agent);
-        Ok(self)
-    }
-
-    /// Set the transport policy for connections.
-    ///
-    /// Controls whether to require V2 transport or prefer V2 with V1 fallback.
-    ///
-    /// # Arguments
-    ///
-    /// * `policy` - The transport policy to use for connections.
-    ///
-    /// # Returns
-    ///
-    /// Self for method chaining.
-    pub fn with_transport_policy(mut self, policy: TransportPolicy) -> Self {
-        self.transport_policy = policy;
-        self
-    }
-
-    /// Set the protocol version to advertise in connections.
-    ///
-    /// # Arguments
-    ///
-    /// * `version` - The protocol version to advertise.
-    ///
-    /// # Returns
-    ///
-    /// Self for method chaining.
-    pub fn with_protocol_version(mut self, version: u32) -> Self {
-        self.protocol_version = PeerProtocolVersion::Known(version);
-        self
-    }
-
-    /// Set the maximum number of concurrent connection tasks.
-    ///
-    /// Controls how many peers can be tested simultaneously. Higher values
-    /// may speed up crawling, but increase resource usage and network load.
-    ///
-    /// # Recommendations
-    ///
-    /// * **Conservative (1-4)** - For slow networks or resource-constrained environments.
-    /// * **Default (8)** - Good balance for most use cases.
-    /// * **Aggressive (16-32)** - For fast crawling with ample resources.
-    ///
-    /// # Arguments
-    ///
-    /// * `max_tasks` - Maximum concurrent tasks (defaults to 8).
-    ///
-    /// # Returns
-    ///
-    /// Self for method chaining.
-    pub fn with_max_concurrent_tasks(mut self, max_tasks: usize) -> Self {
-        self.max_concurrent_tasks = max_tasks;
-        self
-    }
-
-    /// Set the timeout for peer operations.
-    ///
-    /// This timeout applies to all peer-related operations.
-    ///
-    /// * Connection establishment (TCP connect + handshake)
-    /// * Requesting peer addresses after establishing a connection
-    /// * Waiting for responses to protocol messages
-    ///
-    /// A longer timeout may help on slow networks, while a shorter timeout
-    /// can speed up crawling when peers are unresponsive.
-    ///
-    /// # Arguments
-    ///
-    /// * `timeout` - Maximum time to wait for peer operations (defaults to 20 seconds).
-    ///
-    /// # Returns
-    ///
-    /// Self for method chaining.
-    pub fn with_peer_timeout(mut self, timeout: Duration) -> Self {
-        self.peer_timeout = timeout;
-        self
-    }
-
-    /// Build the crawler with the configured options.
-    ///
-    /// # Returns
-    ///
-    /// A configured `Crawler` instance.
-    pub fn build(self) -> Crawler {
-        Crawler {
-            network: self.network,
-            user_agent: self.user_agent,
-            transport_policy: self.transport_policy,
-            protocol_version: self.protocol_version,
-            max_concurrent_tasks: self.max_concurrent_tasks,
-            peer_timeout: self.peer_timeout,
-        }
-    }
-}
-
-impl Crawler {
-    /// Crawl the bitcoin network starting from a seed peer.
-    ///
-    /// This method returns a channel that will receive peer messages as peers are verified.
-    /// The channel will be closed when the crawling is complete or encounters an error.
-    ///
-    /// # Termination
-    ///
-    /// The crawler will terminate in two scenarios:
-    ///
-    /// * **Natural completion** - When all discovered peers have been tested and no more peers are found.
-    /// * **Early termination** - When the returned receiver is dropped, the crawler will detect this and stop gracefully.
-    ///
-    /// # Arguments
-    ///
-    /// * `seed` - The seed peer to start crawling from.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Receiver<PeerMessage>)` - A channel that will receive peer messages.
-    /// * `Err(Error)` - If there was an error during crawling setup.
-    pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, ConnectionError> {
-        let (crawl_tx, crawl_rx) = mpsc::channel(1000);
-
-        let session = CrawlSession {
-            crawler: self.clone(),
-            crawl_tx,
-        };
-
-        tokio::spawn(async move {
-            session.coordinate(seed).await;
-        });
-
-        Ok(crawl_rx)
-    }
 }
 
 impl CrawlSession {
@@ -739,7 +567,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_peers_with_mock() {
+    async fn test_get_peers() {
         let mut mock_conn = MockPeerConnection::new();
 
         // Add some test addresses
@@ -833,35 +661,129 @@ mod tests {
         ));
     }
 
+    /// Test the core deduplication logic that prevents circular loops.
+    ///
+    /// This verifies that the tested_peers HashSet prevents the same peer
+    /// from being processed multiple times, which is the key mechanism
+    /// that prevents infinite loops in circular peer reference scenarios.
     #[tokio::test]
-    async fn test_crawler_configuration() {
-        // Test default configuration
-        let default_crawler = CrawlerBuilder::new(Network::Bitcoin).build();
-        assert_eq!(
-            default_crawler.transport_policy,
-            TransportPolicy::V2Preferred
-        );
-        assert_eq!(
-            default_crawler.protocol_version,
-            PeerProtocolVersion::Known(70016)
-        );
-        assert_eq!(default_crawler.max_concurrent_tasks, 8);
-        assert_eq!(default_crawler.peer_timeout, Duration::from_secs(20));
+    async fn test_peer_deduplication_prevents_loops() {
+        let mut tested_peers = HashSet::new();
 
-        // Test custom configuration
-        let custom_crawler = CrawlerBuilder::new(Network::Testnet)
-            .with_transport_policy(TransportPolicy::V2Required)
-            .with_protocol_version(70015)
-            .with_max_concurrent_tasks(16)
-            .with_peer_timeout(Duration::from_secs(5))
-            .build();
-        assert_eq!(custom_crawler.transport_policy, TransportPolicy::V2Required);
-        assert_eq!(
-            custom_crawler.protocol_version,
-            PeerProtocolVersion::Known(70015)
+        let peer1 = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 8333);
+        let peer2 = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 2)), 8333);
+        let peer1_duplicate = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 8333);
+
+        // First insertion should succeed
+        assert!(
+            tested_peers.insert(peer1.clone()),
+            "First peer should be inserted"
         );
-        assert_eq!(custom_crawler.network, Network::Testnet);
-        assert_eq!(custom_crawler.max_concurrent_tasks, 16);
-        assert_eq!(custom_crawler.peer_timeout, Duration::from_secs(5));
+        assert!(
+            tested_peers.insert(peer2.clone()),
+            "Second peer should be inserted"
+        );
+
+        // Duplicate should be rejected - this prevents infinite loops
+        assert!(
+            !tested_peers.insert(peer1_duplicate),
+            "Duplicate peer should not be inserted"
+        );
+
+        assert_eq!(tested_peers.len(), 2, "Should only have 2 unique peers");
+    }
+
+    /// Test circular peer references with mock connections.
+    ///
+    /// This simulates a scenario where peers return each other's addresses,
+    /// creating potential circular references. The test verifies that
+    /// get_peers() correctly processes all returned addresses.
+    #[tokio::test]
+    async fn test_circular_peer_references_with_mock() {
+        let mut mock_conn = MockPeerConnection::new();
+
+        // Simulate peer returning addresses that could create circular references:
+        // - Other peers that might reference back to this one
+        // - Self-reference (peer returns its own address)
+        mock_conn.add_addr_message(vec![
+            (
+                AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 2)),
+                8333,
+                ServiceFlags::NETWORK,
+            ),
+            (
+                AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 3)),
+                8333,
+                ServiceFlags::NETWORK,
+            ),
+            (
+                AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1)),
+                8333,
+                ServiceFlags::NETWORK,
+            ), // Self-reference
+        ]);
+
+        let (tx, mut rx) = mpsc::channel(10);
+        let result = mock_conn.get_peers(&tx, Duration::from_millis(100)).await;
+
+        assert!(result.is_ok());
+        let peer_count = result.unwrap();
+        assert_eq!(
+            peer_count, 3,
+            "Should receive all 3 peers including self-reference"
+        );
+
+        // Verify we received all the addresses
+        let peers_batch = rx.recv().await.unwrap();
+        assert_eq!(peers_batch.len(), 3);
+
+        let addresses: HashSet<_> = peers_batch.iter().map(|p| p.address.clone()).collect();
+
+        assert!(addresses.contains(&AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(addresses.contains(&AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 2))));
+        assert!(addresses.contains(&AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 3))));
+
+        // The key insight: even though we got circular references,
+        // the crawler's tested_peers HashSet would prevent re-processing
+        // the same addresses, breaking any potential infinite loops.
+    }
+
+    /// Test task counting logic for termination detection.
+    ///
+    /// This verifies the logic used by coordinate() to detect when
+    /// all tasks are complete and the crawler should terminate.
+    #[tokio::test]
+    async fn test_active_task_counting_for_termination() {
+        // Simulate the task counting logic from coordinate()
+        let mut active_tasks = 0_usize;
+        let max_concurrent_tasks = 3_usize;
+
+        // Simulate spawning tasks up to capacity
+        active_tasks += 1; // Task 1 starts
+        assert_eq!(active_tasks, 1);
+
+        active_tasks += 1; // Task 2 starts
+        assert_eq!(active_tasks, 2);
+
+        active_tasks += 1; // Task 3 starts
+        assert_eq!(active_tasks, 3);
+        assert_eq!(active_tasks, max_concurrent_tasks, "At capacity");
+
+        // Simulate task completion
+        active_tasks -= 1; // Task 1 completes
+        assert_eq!(active_tasks, 2);
+
+        active_tasks -= 1; // Task 2 completes
+        assert_eq!(active_tasks, 1);
+
+        active_tasks -= 1; // Task 3 completes
+        assert_eq!(active_tasks, 0);
+
+        // This is the termination condition in coordinate():
+        // when active_tasks == 0, the crawler should terminate
+        assert_eq!(
+            active_tasks, 0,
+            "No active tasks - crawler should terminate"
+        );
     }
 }

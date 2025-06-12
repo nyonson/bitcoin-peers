@@ -43,8 +43,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "trace" => LevelFilter::Trace,
         _ => LevelFilter::Info,
     };
-
-    // Configure fern logger
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(

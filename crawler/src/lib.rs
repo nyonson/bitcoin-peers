@@ -107,9 +107,11 @@
 //! # }
 //! ```
 
+mod builder;
 mod crawler;
 
-pub use crawler::{Crawler, CrawlerBuilder, CrawlerBuilderError, CrawlerMessage};
+pub use builder::{CrawlerBuilder, CrawlerBuilderError};
+pub use crawler::{Crawler, CrawlerMessage};
 
 // Re-exports.
 pub use bitcoin_peers_connection::{
