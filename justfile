@@ -4,24 +4,26 @@
 # required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
 
 NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
+# https://github.com/rust-lang/rust/releases
+STABLE_TOOLCHAIN := "1.87.0"
 
 @_default:
     just --list
 
 # Light check including format and lint rules. 
-@check toolchain=NIGHTLY_TOOLCHAIN:
+@check:
   # Default to the nightly toolchain for modern format and lint rules.
 
   # Ensure the toolchain is installed and has the necessary components.
-  rustup component add --toolchain {{toolchain}} rustfmt clippy
+  rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} rustfmt clippy
   # Cargo's wrapper for rustfmt predates workspaces, so uses the "--all" flag instead of "--workspaces".
-  cargo +{{toolchain}} fmt --check --all
+  cargo +{{NIGHTLY_TOOLCHAIN}} fmt --check --all
   # Lint all workspace members. Enable all feature flags. Check all targets (tests, examples) along with library code. Turn warnings into errors.
-  cargo +{{toolchain}} clippy --workspace --all-features --all-targets -- -D warnings
+  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets -- -D warnings
   # Checking the extremes: all features enabled as well as none. If features are additive, this should expose conflicts.
   # If non-additive features (mutually exclusive) are defined, more specific commands are required.
-  cargo +{{toolchain}} check --workspace --no-default-features --all-targets
-  cargo +{{toolchain}} check --workspace --all-features --all-targets
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --no-default-features --all-targets
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --all-targets
 
 # Run a test suite: unit, msrv, or constraints.
 @test suite="unit":
@@ -34,8 +36,8 @@ NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
   # Virtual workspace (no code in root) doesn't require the "--workspace" flag, but just being explicit.
   # "--all-features" for highest coverage, assuming features are additive so no conflicts.
   # "--all-targets" runs `lib` (unit, integration), `bin`, `test`, `bench`, `example` tests, but not doc code. 
-  cargo test --workspace --all-features --all-targets
-  cargo test --workspace --all-features --doc
+  cargo +{{STABLE_TOOLCHAIN}} test --workspace --all-features --all-targets
+  cargo +{{STABLE_TOOLCHAIN}} test --workspace --all-features --doc
 
 # Check the MSRV.
 @_test-msrv:
@@ -69,11 +71,11 @@ NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
 
 # Run the crawler example with given seed node.
 @_try-crawler ip port="8333" log="info":
-    cargo run -p bitcoin-peers-crawler --example crawler -- --address {{ip}} --port {{port}} --log-level {{log}}
+    cargo +{{STABLE_TOOLCHAIN}} run -p bitcoin-peers-crawler --example crawler -- --address {{ip}} --port {{port}} --log-level {{log}}
  
 # Run the conncetion example to the given address.
 @_try-connection ip port="8333" log="info":
-    cargo run -p bitcoin-peers-connection --example connection -- --address {{ip}} --port {{port}} --log-level {{log}}
+    cargo +{{STABLE_TOOLCHAIN}} run -p bitcoin-peers-connection --example connection -- --address {{ip}} --port {{port}} --log-level {{log}}
  
 # Publish a new version.
 @publish crate version remote="upstream":
