@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.2
+
+Add periodic logging to coordinator.
+
 ## v0.1.1
 
 Add library documentation.
