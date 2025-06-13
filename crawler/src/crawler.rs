@@ -26,24 +26,17 @@ trait PeerConnection {
     ///
     /// # Arguments
     ///
-    /// * `peer_tx` - Channel to send discovered peers through.
     /// * `peer_timeout` - Maximum duration to wait for responses.
-    /// * `tested_peers` - Shared set of already tested peers for filtering.
     ///
     /// # Returns
     ///
-    /// * `Ok(usize)` - The number of peer addresses sent through the channel.
+    /// * `Ok(Vec<Peer>)` - The discovered peer addresses.
     /// * `Err(ConnectionError)` - If an error occurs during the exchange.
-    async fn get_peers(
-        &mut self,
-        peer_tx: &mpsc::UnboundedSender<Vec<Peer>>,
-        peer_timeout: Duration,
-        tested_peers: &Arc<tokio::sync::RwLock<HashSet<Peer>>>,
-    ) -> Result<usize, ConnectionError> {
+    async fn get_peers(&mut self, peer_timeout: Duration) -> Result<Vec<Peer>, ConnectionError> {
         self.send(NetworkMessage::GetAddr).await?;
         debug!("Sent getaddr message to peer");
 
-        let mut peer_count = 0;
+        let mut all_peers = Vec::new();
         let start_time = Instant::now();
 
         while start_time.elapsed() < peer_timeout {
@@ -58,7 +51,7 @@ trait PeerConnection {
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {
                     // Timeout on reading - if we have some addresses, consider it done.
-                    if peer_count > 0 {
+                    if !all_peers.is_empty() {
                         break;
                     }
                     // Otherwise continue waiting for the overall timeout.
@@ -87,7 +80,6 @@ trait PeerConnection {
                                 ),
                             };
                             peers_batch.push(peer);
-                            peer_count += 1;
                         }
                     }
                 }
@@ -97,7 +89,6 @@ trait PeerConnection {
                         let peer =
                             Peer::with_services(addr_msg.addr, addr_msg.port, addr_msg.services);
                         peers_batch.push(peer);
-                        peer_count += 1;
                     }
                 }
                 // Handling Ping's just in case it improves odds of getting more addresses.
@@ -110,33 +101,16 @@ trait PeerConnection {
                 }
             }
 
-            // Send the batch if we collected any peers, but filter first
-            if !peers_batch.is_empty() {
-                // Filter out peers that have already been tested (memory optimization)
-                let mut filtered_peers = Vec::new();
-                {
-                    let tested = tested_peers.read().await;
-                    for peer in peers_batch {
-                        if !tested.contains(&peer) {
-                            filtered_peers.push(peer);
-                        }
-                    }
-                }
-
-                // Only send peers that haven't been tested yet
-                if !filtered_peers.is_empty() && peer_tx.send(filtered_peers).is_err() {
-                    // Receiver dropped, stop processing
-                    break;
-                }
-            }
+            // Collect all peers from this message
+            all_peers.extend(peers_batch);
         }
 
         debug!(
-            "Sent {} peer addresses from {} through channel",
-            peer_count,
+            "Collected {} peer addresses from {}",
+            all_peers.len(),
             self.peer().await
         );
-        Ok(peer_count)
+        Ok(all_peers)
     }
 }
 
@@ -292,16 +266,10 @@ enum TaskResult {
 ///
 /// # Architecture
 ///
-/// The session follows a producer-consumer pattern with lockless communication:
+/// The session follows a producer-consumer pattern with lockless communication.
+///
 /// * **Coordinator** (`coordinate()`) - Manages the work queue and spawns processing tasks.
 /// * **Processors** (`process()`) - Handle individual peer connections and discovery.
-/// * **Communication** - Uses MPSC channels for all inter-task communication.
-///
-/// # Concurrency Control
-///
-/// * **Task Counting** - Tracks active tasks and enforces configured maximum.
-/// * **Channels** - Lockless communication between tasks via MPSC channels.
-/// * **Graceful Shutdown** - Monitors channel closure for early termination.
 #[derive(Clone)]
 struct CrawlSession {
     /// Shared crawler configuration and state.
@@ -315,26 +283,9 @@ struct CrawlSession {
 impl CrawlSession {
     /// Processes a single peer: tests connectivity and discovers new peers.
     ///
-    /// # Process Flow
-    ///
-    /// 1. **Connection** - Attempts TCP connection and bitcoin handshake.
-    /// 2. **Classification** - Reports peer as `Listening` or `NonListening`.
-    /// 3. **Discovery** - If connected, requests peer addresses via `getaddr`.
-    /// 4. **Channel Send** - Sends discovered peers through discovery channel.
-    ///
     /// # Returns
     ///
     /// A `TaskResult` indicating what happened during processing.
-    ///
-    /// # Error Handling
-    ///
-    /// * **Connection failures** - Peer marked as non-listening, returns `ConnectionFailed`.
-    /// * **Channel closure** - Early return with `ChannelClosed`.
-    /// * **Address request failures** - Logged but not fatal, returns `NoPeersFound`.
-    ///
-    /// # Concurrency
-    ///
-    /// This method is completely lockless - all communication happens via channels.
     ///
     /// # Arguments
     ///
@@ -391,17 +342,31 @@ impl CrawlSession {
             return TaskResult::ChannelClosed;
         }
 
-        // Request peers and send them directly through the discovery channel
-        match conn
-            .get_peers(
-                &peer_discovery_tx,
-                self.crawler.peer_timeout,
-                &self.tested_peers,
-            )
-            .await
-        {
-            Ok(peer_count) => {
-                if peer_count > 0 {
+        // Request peers from the connection
+        match conn.get_peers(self.crawler.peer_timeout).await {
+            Ok(discovered_peers) => {
+                if discovered_peers.is_empty() {
+                    return TaskResult::NoPeersFound;
+                }
+
+                // Filter out peers that have already been tested.
+                // This is simply a performance optimization, deduplication
+                // is ensured at the coordinator level.
+                let mut filtered_peers = Vec::new();
+                {
+                    let tested = self.tested_peers.read().await;
+                    for peer in discovered_peers {
+                        if !tested.contains(&peer) {
+                            filtered_peers.push(peer);
+                        }
+                    }
+                }
+
+                if !filtered_peers.is_empty() {
+                    if peer_discovery_tx.send(filtered_peers).is_err() {
+                        // Receiver dropped, stop processing
+                        return TaskResult::ChannelClosed;
+                    }
                     TaskResult::FoundPeers
                 } else {
                     TaskResult::NoPeersFound
@@ -625,15 +590,11 @@ mod tests {
             ),
         ]);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let tested_peers = Arc::new(tokio::sync::RwLock::new(HashSet::new()));
-        let result = mock_conn
-            .get_peers(&tx, Duration::from_millis(100), &tested_peers)
-            .await;
+        let result = mock_conn.get_peers(Duration::from_millis(100)).await;
 
         assert!(result.is_ok());
-        let peer_count = result.unwrap();
-        assert_eq!(peer_count, 2);
+        let peers = result.unwrap();
+        assert_eq!(peers.len(), 2);
 
         // Verify a getaddr message was sent
         assert_eq!(mock_conn.sent_messages.len(), 1);
@@ -642,16 +603,13 @@ mod tests {
             NetworkMessage::GetAddr
         ));
 
-        // Verify peers were sent through channel as a batch
-        let peers_batch = rx.recv().await.unwrap();
-        assert_eq!(peers_batch.len(), 2);
-
-        let peer1 = &peers_batch[0];
+        // Verify peers returned correctly
+        let peer1 = &peers[0];
         assert_eq!(peer1.address, AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1)));
         assert_eq!(peer1.port, 8333);
         assert!(peer1.has_service(ServiceFlags::NETWORK));
 
-        let peer2 = &peers_batch[1];
+        let peer2 = &peers[1];
         assert_eq!(peer2.address, AddrV2::Ipv4(Ipv4Addr::new(10, 0, 0, 1)));
         assert!(peer2.has_service(ServiceFlags::WITNESS));
     }
@@ -661,15 +619,11 @@ mod tests {
         let mut mock_conn = MockPeerConnection::new();
         // Don't add any messages - should timeout
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let tested_peers = Arc::new(tokio::sync::RwLock::new(HashSet::new()));
-        let result = mock_conn
-            .get_peers(&tx, Duration::from_millis(50), &tested_peers)
-            .await;
+        let result = mock_conn.get_peers(Duration::from_millis(50)).await;
 
         assert!(result.is_ok());
-        let peer_count = result.unwrap();
-        assert_eq!(peer_count, 0); // Should get 0 peers on timeout
+        let peers = result.unwrap();
+        assert_eq!(peers.len(), 0); // Should get 0 peers on timeout
 
         // Verify a getaddr message was sent
         assert_eq!(mock_conn.sent_messages.len(), 1);
@@ -677,11 +631,6 @@ mod tests {
             mock_conn.sent_messages[0],
             NetworkMessage::GetAddr
         ));
-
-        // No peers should be in channel
-        assert!(tokio::time::timeout(Duration::from_millis(10), rx.recv())
-            .await
-            .is_err());
     }
 
     #[tokio::test]
@@ -694,11 +643,7 @@ mod tests {
             "Connection lost",
         )));
 
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let tested_peers = Arc::new(tokio::sync::RwLock::new(HashSet::new()));
-        let result = mock_conn
-            .get_peers(&tx, Duration::from_millis(100), &tested_peers)
-            .await;
+        let result = mock_conn.get_peers(Duration::from_millis(100)).await;
 
         // Should return the error
         assert!(result.is_err());
@@ -773,24 +718,18 @@ mod tests {
             ), // Self-reference
         ]);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let tested_peers = Arc::new(tokio::sync::RwLock::new(HashSet::new()));
-        let result = mock_conn
-            .get_peers(&tx, Duration::from_millis(100), &tested_peers)
-            .await;
+        let result = mock_conn.get_peers(Duration::from_millis(100)).await;
 
         assert!(result.is_ok());
-        let peer_count = result.unwrap();
+        let peers = result.unwrap();
         assert_eq!(
-            peer_count, 3,
+            peers.len(),
+            3,
             "Should receive all 3 peers including self-reference"
         );
 
         // Verify we received all the addresses
-        let peers_batch = rx.recv().await.unwrap();
-        assert_eq!(peers_batch.len(), 3);
-
-        let addresses: HashSet<_> = peers_batch.iter().map(|p| p.address.clone()).collect();
+        let addresses: HashSet<_> = peers.iter().map(|p| p.address.clone()).collect();
 
         assert!(addresses.contains(&AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1))));
         assert!(addresses.contains(&AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 2))));
