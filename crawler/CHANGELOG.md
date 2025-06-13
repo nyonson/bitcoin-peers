@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.4
+
+* Fix deadlock issue when using a high concurrency setting.
+
 ## v0.1.3
 
 * Support `Ping` messages in case it helps gather more addresses from peers.
