@@ -108,6 +108,7 @@
 //! ```
 
 mod builder;
+mod connection;
 mod crawler;
 
 pub use builder::{CrawlerBuilder, CrawlerBuilderError};
