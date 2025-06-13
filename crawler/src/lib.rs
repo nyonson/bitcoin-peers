@@ -110,6 +110,7 @@
 mod builder;
 mod connection;
 mod crawler;
+mod session;
 
 pub use builder::{CrawlerBuilder, CrawlerBuilderError};
 pub use crawler::{Crawler, CrawlerMessage};
