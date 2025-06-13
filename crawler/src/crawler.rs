@@ -97,6 +97,11 @@ trait PeerConnection {
                         peer_count += 1;
                     }
                 }
+                // Handling Ping's just in case it improves odds of getting more addresses.
+                NetworkMessage::Ping(nonce) => {
+                    debug!("Received ping during get_peers, responding with pong");
+                    self.send(NetworkMessage::Pong(nonce)).await?
+                }
                 _ => {
                     debug!("Received unexpected message in get_peers: {message:?}, ignoring");
                 }
@@ -419,20 +424,20 @@ impl CrawlSession {
                 break;
             }
 
-            // Periodic status logging.
+            // Periodic status logging, but can be crowded out by large peer batches.
             if last_log_time.elapsed() >= log_interval {
                 info!(
-                    "{} active tasks (max: {}), {} messages queue'd",
+                    "{} active tasks (max: {}), {} unique peers tested",
                     active_tasks,
                     self.crawler.max_concurrent_tasks,
-                    peer_discovery_rx.len()
+                    tested_peers.len()
                 );
                 last_log_time = Instant::now();
             }
 
             // Wait for something to happen
             tokio::select! {
-                // New peers discovered.
+                // New peers discovered, can be up to 1,000 in a batch.
                 Some(peers) = peer_discovery_rx.recv() => {
                     for peer in peers {
                         // Skip if already tested
@@ -440,16 +445,14 @@ impl CrawlSession {
                             continue;
                         }
 
-                        // Wait if we're at capacity
+                        // Wait if we're at capacity.
                         while active_tasks >= self.crawler.max_concurrent_tasks {
-                            // Wait for a task to complete
                             if let Some(result) = task_done_rx.recv().await {
                                 active_tasks -= 1;
                                 debug!("Task completed with result: {result:?}");
                             }
                         }
 
-                        // Spawn a new task
                         let session = self.clone();
                         let discovery_tx = peer_discovery_tx.clone();
                         let done_tx = task_done_tx.clone();
@@ -466,7 +469,7 @@ impl CrawlSession {
                     active_tasks -= 1;
                     debug!("Task completed with result: {result:?}");
 
-                    // Check if we're done: no more tasks running
+                    // Check if we're done: no more tasks running.
                     if active_tasks == 0 {
                         info!("Crawler exhausted - all peers processed");
                         break;
