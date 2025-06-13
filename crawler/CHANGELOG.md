@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.3
+
+Support `Ping` messages in case it helps gather more addresses from peers.
+
 ## v0.1.2
 
 Add periodic logging to coordinator.
