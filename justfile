@@ -30,10 +30,10 @@ STABLE_TOOLCHAIN := "1.87.0"
 @fix:
   # Ensure the toolchain is installed and has the necessary components.
   rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} rustfmt clippy
-  # Format code automatically (remove --check flag to actually apply formatting).
+  # No --check flag to actually apply formatting.
   cargo +{{NIGHTLY_TOOLCHAIN}} fmt --all
-  # Apply clippy fixes automatically (add --fix flag to apply suggestions).
-  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets --fix -- -D warnings
+  # Adding --fix flag to apply suggestions with --allow-dirty.
+  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets --fix --allow-dirty -- -D warnings
 
 # Run a test suite: unit, msrv, or constraints.
 @test suite="unit":
