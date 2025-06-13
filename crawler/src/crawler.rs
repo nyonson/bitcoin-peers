@@ -7,6 +7,7 @@ use bitcoin_peers_connection::{
 };
 use log::{debug, info};
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{collections::HashSet, fmt};
 use tokio::sync::mpsc::{self, Receiver};
@@ -27,6 +28,7 @@ trait PeerConnection {
     ///
     /// * `peer_tx` - Channel to send discovered peers through.
     /// * `peer_timeout` - Maximum duration to wait for responses.
+    /// * `tested_peers` - Shared set of already tested peers for filtering.
     ///
     /// # Returns
     ///
@@ -34,8 +36,9 @@ trait PeerConnection {
     /// * `Err(ConnectionError)` - If an error occurs during the exchange.
     async fn get_peers(
         &mut self,
-        peer_tx: &mpsc::Sender<Vec<Peer>>,
+        peer_tx: &mpsc::UnboundedSender<Vec<Peer>>,
         peer_timeout: Duration,
+        tested_peers: &Arc<tokio::sync::RwLock<HashSet<Peer>>>,
     ) -> Result<usize, ConnectionError> {
         self.send(NetworkMessage::GetAddr).await?;
         debug!("Sent getaddr message to peer");
@@ -107,10 +110,24 @@ trait PeerConnection {
                 }
             }
 
-            // Send the batch if we collected any peers
-            if !peers_batch.is_empty() && peer_tx.send(peers_batch).await.is_err() {
-                // Receiver dropped, stop processing
-                break;
+            // Send the batch if we collected any peers, but filter first
+            if !peers_batch.is_empty() {
+                // Filter out peers that have already been tested (memory optimization)
+                let mut filtered_peers = Vec::new();
+                {
+                    let tested = tested_peers.read().await;
+                    for peer in peers_batch {
+                        if !tested.contains(&peer) {
+                            filtered_peers.push(peer);
+                        }
+                    }
+                }
+
+                // Only send peers that haven't been tested yet
+                if !filtered_peers.is_empty() && peer_tx.send(filtered_peers).is_err() {
+                    // Receiver dropped, stop processing
+                    break;
+                }
             }
         }
 
@@ -243,6 +260,7 @@ impl Crawler {
         let session = CrawlSession {
             crawler: self.clone(),
             crawl_tx,
+            tested_peers: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
         };
 
         tokio::spawn(async move {
@@ -290,6 +308,8 @@ struct CrawlSession {
     crawler: Crawler,
     /// Channel for sending discovery results back to the caller.
     crawl_tx: mpsc::Sender<CrawlerMessage>,
+    /// Shared set of peers that have already been tested, used for deduplication.
+    tested_peers: Arc<tokio::sync::RwLock<HashSet<Peer>>>,
 }
 
 impl CrawlSession {
@@ -320,7 +340,11 @@ impl CrawlSession {
     ///
     /// * `peer` - The peer to test and potentially discover addresses from.
     /// * `peer_discovery_tx` - Channel to send discovered peers through.
-    async fn process(&self, peer: Peer, peer_discovery_tx: mpsc::Sender<Vec<Peer>>) -> TaskResult {
+    async fn process(
+        &self,
+        peer: Peer,
+        peer_discovery_tx: mpsc::UnboundedSender<Vec<Peer>>,
+    ) -> TaskResult {
         debug!("Processing peer {peer:?}");
 
         let mut conn = match timeout(
@@ -369,7 +393,11 @@ impl CrawlSession {
 
         // Request peers and send them directly through the discovery channel
         match conn
-            .get_peers(&peer_discovery_tx, self.crawler.peer_timeout)
+            .get_peers(
+                &peer_discovery_tx,
+                self.crawler.peer_timeout,
+                &self.tested_peers,
+            )
             .await
         {
             Ok(peer_count) => {
@@ -398,19 +426,18 @@ impl CrawlSession {
     /// 2. **Channel Closure** - Receiver dropped, indicating caller no longer interested.
     async fn coordinate(&self, seed: Peer) {
         // Channel to track discovered peers to process.
-        let (peer_discovery_tx, mut peer_discovery_rx) = mpsc::channel(1000);
+        // Use unbounded channel to prevent tasks from blocking on peer discovery
+        let (peer_discovery_tx, mut peer_discovery_rx) = mpsc::unbounded_channel();
         // Channel to track task completion.
         let (task_done_tx, mut task_done_rx) =
             mpsc::channel::<TaskResult>(self.crawler.max_concurrent_tasks);
 
         // Prime the pump with the seed peer.
-        if peer_discovery_tx.send(vec![seed]).await.is_err() {
+        if peer_discovery_tx.send(vec![seed]).is_err() {
             debug!("Failed to send seed peer");
             return;
         }
 
-        // Track which peers we have asked.
-        let mut tested_peers = HashSet::new();
         // Number of in-flight tasks.
         let mut active_tasks = 0;
 
@@ -426,11 +453,10 @@ impl CrawlSession {
 
             // Periodic status logging, but can be crowded out by large peer batches.
             if last_log_time.elapsed() >= log_interval {
+                let tested_count = self.tested_peers.read().await.len();
                 info!(
                     "{} active tasks (max: {}), {} unique peers tested",
-                    active_tasks,
-                    self.crawler.max_concurrent_tasks,
-                    tested_peers.len()
+                    active_tasks, self.crawler.max_concurrent_tasks, tested_count
                 );
                 last_log_time = Instant::now();
             }
@@ -441,7 +467,7 @@ impl CrawlSession {
                 Some(peers) = peer_discovery_rx.recv() => {
                     for peer in peers {
                         // Skip if already tested
-                        if !tested_peers.insert(peer.clone()) {
+                        if !self.tested_peers.write().await.insert(peer.clone()) {
                             continue;
                         }
 
@@ -599,8 +625,11 @@ mod tests {
             ),
         ]);
 
-        let (tx, mut rx) = mpsc::channel(10);
-        let result = mock_conn.get_peers(&tx, Duration::from_millis(100)).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tested_peers = Arc::new(tokio::sync::RwLock::new(HashSet::new()));
+        let result = mock_conn
+            .get_peers(&tx, Duration::from_millis(100), &tested_peers)
+            .await;
 
         assert!(result.is_ok());
         let peer_count = result.unwrap();
@@ -632,8 +661,11 @@ mod tests {
         let mut mock_conn = MockPeerConnection::new();
         // Don't add any messages - should timeout
 
-        let (tx, mut rx) = mpsc::channel(10);
-        let result = mock_conn.get_peers(&tx, Duration::from_millis(50)).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tested_peers = Arc::new(tokio::sync::RwLock::new(HashSet::new()));
+        let result = mock_conn
+            .get_peers(&tx, Duration::from_millis(50), &tested_peers)
+            .await;
 
         assert!(result.is_ok());
         let peer_count = result.unwrap();
@@ -662,8 +694,11 @@ mod tests {
             "Connection lost",
         )));
 
-        let (tx, _rx) = mpsc::channel(10);
-        let result = mock_conn.get_peers(&tx, Duration::from_millis(100)).await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tested_peers = Arc::new(tokio::sync::RwLock::new(HashSet::new()));
+        let result = mock_conn
+            .get_peers(&tx, Duration::from_millis(100), &tested_peers)
+            .await;
 
         // Should return the error
         assert!(result.is_err());
@@ -738,8 +773,11 @@ mod tests {
             ), // Self-reference
         ]);
 
-        let (tx, mut rx) = mpsc::channel(10);
-        let result = mock_conn.get_peers(&tx, Duration::from_millis(100)).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tested_peers = Arc::new(tokio::sync::RwLock::new(HashSet::new()));
+        let result = mock_conn
+            .get_peers(&tx, Duration::from_millis(100), &tested_peers)
+            .await;
 
         assert!(result.is_ok());
         let peer_count = result.unwrap();
