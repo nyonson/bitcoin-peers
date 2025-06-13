@@ -409,6 +409,9 @@ impl CrawlSession {
         // Number of in-flight tasks.
         let mut active_tasks = 0;
 
+        let mut last_log_time = Instant::now();
+        let log_interval = Duration::from_secs(60);
+
         loop {
             // Check if caller hung up before continuing.
             if self.crawl_tx.is_closed() {
@@ -416,9 +419,20 @@ impl CrawlSession {
                 break;
             }
 
+            // Periodic status logging.
+            if last_log_time.elapsed() >= log_interval {
+                info!(
+                    "{} active tasks (max: {}), {} messages queue'd",
+                    active_tasks,
+                    self.crawler.max_concurrent_tasks,
+                    peer_discovery_rx.len()
+                );
+                last_log_time = Instant::now();
+            }
+
             // Wait for something to happen
             tokio::select! {
-                // New peers discovered
+                // New peers discovered.
                 Some(peers) = peer_discovery_rx.recv() => {
                     for peer in peers {
                         // Skip if already tested
@@ -443,13 +457,11 @@ impl CrawlSession {
                         active_tasks += 1;
                         tokio::spawn(async move {
                             let result = session.process(peer, discovery_tx).await;
-                            // Signal completion with result
-                            let _ = done_tx.send(result).await;
+                            done_tx.send(result).await.expect("Coordinator should always be listening for task completion");
                         });
                     }
                 }
-
-                // Task completed
+                // Task completed.
                 Some(result) = task_done_rx.recv() => {
                     active_tasks -= 1;
                     debug!("Task completed with result: {result:?}");
