@@ -29,7 +29,7 @@ pub struct SessionConfig {
 }
 
 /// Result of processing a single peer in the crawler.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum TaskResult {
     /// Successfully connected and found peers.
     FoundPeers,
@@ -73,7 +73,10 @@ impl CrawlSession {
         }
     }
 
-    /// Processes a single peer: tests connectivity and discovers new peers.
+    /// Processes a peer connection: discovers new peers from an established connection.
+    ///
+    /// This method handles the core peer discovery logic: sending getaddr requests,
+    /// receiving peer addresses, filtering duplicates, and forwarding results.
     ///
     /// # Returns
     ///
@@ -81,61 +84,26 @@ impl CrawlSession {
     ///
     /// # Arguments
     ///
-    /// * `peer` - The peer to test and potentially discover addresses from.
+    /// * `connection` - An established connection to a peer.
     /// * `peer_discovery_tx` - Channel to send discovered peers through.
-    async fn process(
+    async fn process_peers<C: PeerConnection>(
         &self,
-        peer: Peer,
+        mut connection: C,
         peer_discovery_tx: mpsc::UnboundedSender<Vec<Peer>>,
     ) -> TaskResult {
-        debug!("Processing peer {peer:?}");
-
-        let mut conn = match timeout(
-            self.config.peer_timeout,
-            Connection::tcp(
-                peer.clone(),
-                self.config.network,
-                ConnectionConfiguration::non_listening(
-                    self.config.protocol_version,
-                    self.config.transport_policy,
-                    FeaturePreferences::default(),
-                    self.config.user_agent.clone(),
-                ),
-            ),
-        )
-        .await
-        {
-            Ok(Ok(conn)) => conn,
-            Ok(Err(_)) | Err(_) => {
-                if self
-                    .crawl_tx
-                    .send(CrawlerMessage::NonListening(peer))
-                    .await
-                    .is_err()
-                {
-                    // Receiver dropped, stop processing.
-                    return TaskResult::ChannelClosed;
-                }
-                return TaskResult::ConnectionFailed;
-            }
-        };
-
-        // The connection has been established and handshake completed.
-        // Services and version are updated in the peer.
-        let peer_info = conn.peer().await;
+        let peer_info = connection.peer().await;
+        debug!("Processing peer {peer_info:?}");
 
         if self
             .crawl_tx
-            .send(CrawlerMessage::Listening(peer_info))
+            .send(CrawlerMessage::Listening(peer_info.clone()))
             .await
             .is_err()
         {
-            // Receiver dropped, stop processing.
             return TaskResult::ChannelClosed;
         }
 
-        // Request peers from the connection
-        match conn.get_peers(self.config.peer_timeout).await {
+        match connection.get_peers(self.config.peer_timeout).await {
             Ok(discovered_peers) => {
                 if discovered_peers.is_empty() {
                     return TaskResult::NoPeersFound;
@@ -156,7 +124,6 @@ impl CrawlSession {
 
                 if !filtered_peers.is_empty() {
                     if peer_discovery_tx.send(filtered_peers).is_err() {
-                        // Receiver dropped, stop processing
                         return TaskResult::ChannelClosed;
                     }
                     TaskResult::FoundPeers
@@ -165,10 +132,62 @@ impl CrawlSession {
                 }
             }
             Err(e) => {
-                debug!("Failed to get peers from {peer}: {e}");
+                debug!("Failed to get peers from {peer_info}: {e}");
                 TaskResult::NoPeersFound
             }
         }
+    }
+
+    /// Processes a single peer: establishes connection and discovers new peers.
+    ///
+    /// This is a wrapper method that handles connection establishment and then
+    /// delegates to [`process_peers`] for the actual peer discovery logic.
+    ///
+    /// # Returns
+    ///
+    /// A `TaskResult` indicating what happened during processing.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer` - The peer to test and potentially discover addresses from.
+    /// * `peer_discovery_tx` - Channel to send discovered peers through.
+    async fn process(
+        &self,
+        peer: Peer,
+        peer_discovery_tx: mpsc::UnboundedSender<Vec<Peer>>,
+    ) -> TaskResult {
+        debug!("Establishing connection to peer {peer:?}");
+
+        let connection = match timeout(
+            self.config.peer_timeout,
+            Connection::tcp(
+                peer.clone(),
+                self.config.network,
+                ConnectionConfiguration::non_listening(
+                    self.config.protocol_version,
+                    self.config.transport_policy,
+                    FeaturePreferences::default(),
+                    self.config.user_agent.clone(),
+                ),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(_)) | Err(_) => {
+                if self
+                    .crawl_tx
+                    .send(CrawlerMessage::NonListening(peer))
+                    .await
+                    .is_err()
+                {
+                    return TaskResult::ChannelClosed;
+                }
+                return TaskResult::ConnectionFailed;
+            }
+        };
+
+        self.process_peers(connection, peer_discovery_tx).await
     }
 
     /// Coordinates the crawling process by managing the work queue and task scheduling.
@@ -260,5 +279,149 @@ impl CrawlSession {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::test_utils::MockPeerConnection;
+    use bitcoin::p2p::address::AddrV2;
+    use bitcoin_peers_connection::ConnectionError;
+    use std::net::Ipv4Addr;
+    use tokio::sync::mpsc;
+
+    fn create_test_session() -> (CrawlSession, mpsc::Receiver<CrawlerMessage>) {
+        let (crawl_tx, crawl_rx) = mpsc::channel(10);
+        let config = SessionConfig {
+            network: bitcoin::Network::Bitcoin,
+            user_agent: None,
+            transport_policy: TransportPolicy::V2Preferred,
+            protocol_version: PeerProtocolVersion::Known(70016),
+            max_concurrent_tasks: 8,
+            peer_timeout: Duration::from_secs(30),
+        };
+        let session = CrawlSession::new(config, crawl_tx);
+        (session, crawl_rx)
+    }
+
+    #[tokio::test]
+    async fn test_process_peers() {
+        let (session, mut crawl_rx) = create_test_session();
+        let (discovery_tx, mut discovery_rx) = mpsc::unbounded_channel();
+
+        // Create a mock connection with pre-configured peer addresses
+        let mut mock_conn = MockPeerConnection::new();
+        mock_conn.add_addr_message(vec![
+            (
+                AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1)),
+                8333,
+                bitcoin::p2p::ServiceFlags::NETWORK,
+            ),
+            (
+                AddrV2::Ipv4(Ipv4Addr::new(10, 0, 0, 1)),
+                8333,
+                bitcoin::p2p::ServiceFlags::NETWORK | bitcoin::p2p::ServiceFlags::WITNESS,
+            ),
+        ]);
+
+        // Test the process_peers method directly with the mock connection
+        let result = session.process_peers(mock_conn, discovery_tx).await;
+
+        // Verify the result
+        assert_eq!(result, TaskResult::FoundPeers);
+
+        // Verify that a Listening message was sent
+        let crawl_message = crawl_rx
+            .try_recv()
+            .expect("Should have received a crawler message");
+        match crawl_message {
+            CrawlerMessage::Listening(peer) => {
+                assert_eq!(peer.address, AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)));
+                assert_eq!(peer.port, 8333);
+            }
+            CrawlerMessage::NonListening(_) => panic!("Expected Listening message"),
+        }
+
+        // Verify that discovered peers were sent
+        let discovered_peers = discovery_rx
+            .try_recv()
+            .expect("Should have received discovered peers");
+        assert_eq!(discovered_peers.len(), 2);
+
+        // Check the first discovered peer
+        assert_eq!(
+            discovered_peers[0].address,
+            AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1))
+        );
+        assert_eq!(discovered_peers[0].port, 8333);
+        assert!(discovered_peers[0].has_service(bitcoin::p2p::ServiceFlags::NETWORK));
+
+        // Check the second discovered peer
+        assert_eq!(
+            discovered_peers[1].address,
+            AddrV2::Ipv4(Ipv4Addr::new(10, 0, 0, 1))
+        );
+        assert_eq!(discovered_peers[1].port, 8333);
+        assert!(discovered_peers[1].has_service(bitcoin::p2p::ServiceFlags::WITNESS));
+    }
+
+    #[tokio::test]
+    async fn test_process_peers_no_peers_found() {
+        let (session, mut crawl_rx) = create_test_session();
+        let (discovery_tx, mut discovery_rx) = mpsc::unbounded_channel();
+
+        // Create a mock connection that returns no peers
+        let mock_conn = MockPeerConnection::new();
+        // Don't add any address messages - should timeout and return empty
+
+        let result = session.process_peers(mock_conn, discovery_tx).await;
+
+        // Should get NoPeersFound since no addresses were added to the mock
+        assert_eq!(result, TaskResult::NoPeersFound);
+
+        // Should still send a Listening message
+        let crawl_message = crawl_rx
+            .try_recv()
+            .expect("Should have received a crawler message");
+        match crawl_message {
+            CrawlerMessage::Listening(peer) => {
+                assert_eq!(peer.address, AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)));
+            }
+            CrawlerMessage::NonListening(_) => panic!("Expected Listening message"),
+        }
+
+        // Should not send any discovered peers
+        assert!(discovery_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_peers_connection_error() {
+        let (session, mut crawl_rx) = create_test_session();
+        let (discovery_tx, mut discovery_rx) = mpsc::unbounded_channel();
+
+        // Create a mock connection that returns an error when getting peers
+        let mut mock_conn = MockPeerConnection::new();
+        mock_conn.add_incoming_error(ConnectionError::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "Connection lost",
+        )));
+
+        let result = session.process_peers(mock_conn, discovery_tx).await;
+
+        // Should get NoPeersFound when connection fails during get_peers
+        assert_eq!(result, TaskResult::NoPeersFound);
+
+        // Should still send a Listening message (connection was established)
+        let crawl_message = crawl_rx
+            .try_recv()
+            .expect("Should have received a crawler message");
+        match crawl_message {
+            CrawlerMessage::Listening(_) => {} // Expected
+            CrawlerMessage::NonListening(_) => panic!("Expected Listening message"),
+        }
+
+        // Should not send any discovered peers
+        assert!(discovery_rx.try_recv().is_err());
     }
 }
