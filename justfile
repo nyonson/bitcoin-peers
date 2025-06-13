@@ -3,8 +3,9 @@
 # The recipes make heavy use of `rustup`'s toolchain syntax (e.g. `cargo +nightly`). `rustup` is
 # required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
 
+# Explicit toolchain versions per hash for a chance at determinitic builds.
+# Versions can be found at https://github.com/rust-lang/rust/releases
 NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
-# https://github.com/rust-lang/rust/releases
 STABLE_TOOLCHAIN := "1.87.0"
 
 @_default:
@@ -24,6 +25,15 @@ STABLE_TOOLCHAIN := "1.87.0"
   # If non-additive features (mutually exclusive) are defined, more specific commands are required.
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --no-default-features --all-targets
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --all-targets
+
+# Attempt any auto-fixes for format and lints.
+@fix:
+  # Ensure the toolchain is installed and has the necessary components.
+  rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} rustfmt clippy
+  # Format code automatically (remove --check flag to actually apply formatting).
+  cargo +{{NIGHTLY_TOOLCHAIN}} fmt --all
+  # Apply clippy fixes automatically (add --fix flag to apply suggestions).
+  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets --fix -- -D warnings
 
 # Run a test suite: unit, msrv, or constraints.
 @test suite="unit":
