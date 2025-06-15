@@ -1,7 +1,9 @@
+use crate::connection::PeerConnector;
 use crate::session::{CrawlSession, SessionConfig};
 use bitcoin::Network;
 use bitcoin_peers_connection::{
-    ConnectionError, Peer, PeerProtocolVersion, TransportPolicy, UserAgent,
+    ConnectionConfiguration, ConnectionError, FeaturePreferences, Peer, PeerProtocolVersion,
+    TransportPolicy, UserAgent,
 };
 use std::fmt;
 use std::time::Duration;
@@ -57,7 +59,7 @@ impl Crawler {
     /// Create a new crawler with the specified configuration.
     ///
     /// This constructor allows direct creation of a crawler if you prefer not to use
-    /// the [`CrawlerBuilder`]. For most use cases, [`CrawlerBuilder::new()`] provides
+    /// the [`crate::CrawlerBuilder`]. For most use cases, [`crate::CrawlerBuilder::new()`] provides
     /// a more convenient API with sensible defaults.
     ///
     /// # Arguments
@@ -89,10 +91,6 @@ impl Crawler {
     /// Create session configuration from this crawler.
     fn session_config(&self) -> SessionConfig {
         SessionConfig {
-            network: self.network,
-            user_agent: self.user_agent.clone(),
-            transport_policy: self.transport_policy,
-            protocol_version: self.protocol_version,
             max_concurrent_tasks: self.max_concurrent_tasks,
             peer_timeout: self.peer_timeout,
         }
@@ -121,7 +119,18 @@ impl Crawler {
     pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, ConnectionError> {
         let (crawl_tx, crawl_rx) = mpsc::channel(1000);
 
-        let session = CrawlSession::new(self.session_config(), crawl_tx);
+        // Create the connection configuration
+        let connection_config = ConnectionConfiguration::non_listening(
+            self.protocol_version,
+            self.transport_policy,
+            FeaturePreferences::default(),
+            self.user_agent.clone(),
+        );
+
+        // Create the connector
+        let connector = PeerConnector::new(self.network, connection_config);
+
+        let session = CrawlSession::new(self.session_config(), crawl_tx, connector);
 
         tokio::spawn(async move {
             session.coordinate(seed).await;
