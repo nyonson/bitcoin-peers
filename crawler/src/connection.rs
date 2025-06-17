@@ -3,6 +3,10 @@
 //! This module provides the [`PeerConnection`] trait that abstracts bitcoin peer
 //! connections, enabling dependency injection for testing without modifying
 //! the core crawler logic.
+//!
+//! It would be nice if super clean async/await syntax could be used, but the
+//! implementations must be `Send` due to how things are spawned in the CrawlerSession.
+//! So RPITIT syntax is used instead.
 
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin_peers_connection::{Connection, ConnectionConfiguration, ConnectionError, Peer};
