@@ -18,4 +18,6 @@ Crawl across the bitcoin network beginning from a seed peer. Check out [the exam
 
 ## Performance
 
-On a consumer-grade laptop, memory usage remains relatively constant no matter the `max_concurrent_tasks` setting, but CPU usage spikes do occur as you turn that knob up. 
+The crawler is a bit of a memory hog at the moment since it queues up work in an unbounded channel. Each node visited can add 1000s to the queue. An alternative memory-saving strategy can be implemented, but may require more complex coordination with tasks.
+
+On a consumer-grade laptop, memory usage remains relatively consistent no matter the `max_concurrent_tasks` setting, but CPU usage spikes do occur as you turn that knob up. 
