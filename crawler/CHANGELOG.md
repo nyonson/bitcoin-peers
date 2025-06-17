@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.5
+
+* Fix initial race condition. Usually only caught in tests where mocks finish much quicker than real life connections.
+
 ## v0.1.4
 
 * Fix deadlock issue when using a high concurrency setting.
