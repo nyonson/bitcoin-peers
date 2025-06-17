@@ -41,8 +41,6 @@ enum TaskResult {
 ///
 /// # Architecture
 ///
-/// The session follows a producer-consumer pattern with lockless communication.
-///
 /// * **Coordinator** (`coordinate()`) - Manages the work queue and spawns processing tasks.
 /// * **Processors** (`process()`) - Handle individual peer connections and discovery.
 #[derive(Clone)]
@@ -72,9 +70,7 @@ impl<C: Connector> CrawlSession<C> {
         }
     }
 
-    /// Processes a single peer: establishes connection and discovers new peers.
-    ///
-    /// This method handles connection establishment and peer discovery.
+    /// Processes a single peer. Establishes connection and discovers new peers.
     ///
     /// # Returns
     ///
@@ -171,7 +167,8 @@ impl<C: Connector> CrawlSession<C> {
     /// 2. **Channel Closure** - Receiver dropped, indicating caller no longer interested.
     pub async fn coordinate(&self, seed: Peer) {
         // Channel to track discovered peers to process.
-        // Use unbounded channel to prevent tasks from blocking on peer discovery
+        // Use unbounded channel to prevent tasks from blocking on peer discovery,
+        // at the cost of increased memory usage.
         let (peer_discovery_tx, mut peer_discovery_rx) = mpsc::unbounded_channel();
         // Channel to track task completion.
         let (task_done_tx, mut task_done_rx) =
@@ -210,12 +207,11 @@ impl<C: Connector> CrawlSession<C> {
                 // New peers discovered.
                 Some(peers) = peer_discovery_rx.recv() => {
                     for peer in peers {
-                        // Skip if already tested
                         if !self.tested_peers.write().await.insert(peer.clone()) {
                             continue;
                         }
 
-                        // Wait if we're at capacity.
+                        // Wait if we're at max concurrent capacity.
                         while active_tasks >= self.config.max_concurrent_tasks {
                             if let Some(result) = task_done_rx.recv().await {
                                 active_tasks -= 1;
@@ -292,7 +288,6 @@ mod tests {
         let (session, mut crawl_rx) = create_test_session();
         let (discovery_tx, mut discovery_rx) = mpsc::unbounded_channel();
 
-        // Create a mock connection with pre-configured peer addresses
         let mut mock_conn = MockPeerConnection::new();
         mock_conn.add_addr_message(vec![
             (
@@ -307,17 +302,13 @@ mod tests {
             ),
         ]);
 
-        // Configure the connector to return our mock connection
         session.connector.add_connection(mock_conn);
 
-        // Test the process method with a peer
         let test_peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
         let result = session.process(test_peer, discovery_tx).await;
 
-        // Verify the result
         assert_eq!(result, TaskResult::FoundPeers);
 
-        // Verify that a Listening message was sent
         let crawl_message = crawl_rx
             .try_recv()
             .expect("Should have received a crawler message");
@@ -329,13 +320,11 @@ mod tests {
             CrawlerMessage::NonListening(_) => panic!("Expected Listening message"),
         }
 
-        // Verify that discovered peers were sent
         let discovered_peers = discovery_rx
             .try_recv()
             .expect("Should have received discovered peers");
         assert_eq!(discovered_peers.len(), 2);
 
-        // Check the first discovered peer
         assert_eq!(
             discovered_peers[0].address,
             AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1))
@@ -343,7 +332,6 @@ mod tests {
         assert_eq!(discovered_peers[0].port, 8333);
         assert!(discovered_peers[0].has_service(bitcoin::p2p::ServiceFlags::NETWORK));
 
-        // Check the second discovered peer
         assert_eq!(
             discovered_peers[1].address,
             AddrV2::Ipv4(Ipv4Addr::new(10, 0, 0, 1))
@@ -357,21 +345,15 @@ mod tests {
         let (session, mut crawl_rx) = create_test_session();
         let (discovery_tx, mut discovery_rx) = mpsc::unbounded_channel();
 
-        // Create a mock connection that returns no peers
         let mock_conn = MockPeerConnection::new();
-        // Don't add any address messages - should timeout and return empty
 
-        // Configure the connector to return our mock connection
         session.connector.add_connection(mock_conn);
 
-        // Test the process method with a peer
         let test_peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
         let result = session.process(test_peer, discovery_tx).await;
 
-        // Should get NoPeersFound since no addresses were added to the mock
         assert_eq!(result, TaskResult::NoPeersFound);
 
-        // Should still send a Listening message
         let crawl_message = crawl_rx
             .try_recv()
             .expect("Should have received a crawler message");
@@ -382,7 +364,6 @@ mod tests {
             CrawlerMessage::NonListening(_) => panic!("Expected Listening message"),
         }
 
-        // Should not send any discovered peers
         assert!(discovery_rx.try_recv().is_err());
     }
 
@@ -391,24 +372,19 @@ mod tests {
         let (session, mut crawl_rx) = create_test_session();
         let (discovery_tx, mut discovery_rx) = mpsc::unbounded_channel();
 
-        // Create a mock connection that returns an error when getting peers
         let mut mock_conn = MockPeerConnection::new();
         mock_conn.add_incoming_error(ConnectionError::Io(std::io::Error::new(
             std::io::ErrorKind::BrokenPipe,
             "Connection lost",
         )));
 
-        // Configure the connector to return our mock connection
         session.connector.add_connection(mock_conn);
 
-        // Test the process method with a peer
         let test_peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
         let result = session.process(test_peer, discovery_tx).await;
 
-        // Should get NoPeersFound when connection fails during get_peers
         assert_eq!(result, TaskResult::NoPeersFound);
 
-        // Should still send a Listening message (connection was established)
         let crawl_message = crawl_rx
             .try_recv()
             .expect("Should have received a crawler message");
@@ -417,7 +393,6 @@ mod tests {
             CrawlerMessage::NonListening(_) => panic!("Expected Listening message"),
         }
 
-        // Should not send any discovered peers
         assert!(discovery_rx.try_recv().is_err());
     }
 
@@ -426,16 +401,13 @@ mod tests {
         let (session, mut crawl_rx) = create_test_session();
         let (discovery_tx, mut discovery_rx) = mpsc::unbounded_channel();
 
-        // Don't add any mock connections - connector will fail
+        // Don't add any mock connections - connector will fail.
 
-        // Test the process method with a peer
         let test_peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
         let result = session.process(test_peer.clone(), discovery_tx).await;
 
-        // Should get ConnectionFailed when connector fails
         assert_eq!(result, TaskResult::ConnectionFailed);
 
-        // Should send a NonListening message
         let crawl_message = crawl_rx
             .try_recv()
             .expect("Should have received a crawler message");
@@ -447,7 +419,6 @@ mod tests {
             CrawlerMessage::Listening(_) => panic!("Expected NonListening message"),
         }
 
-        // Should not send any discovered peers
         assert!(discovery_rx.try_recv().is_err());
     }
 
