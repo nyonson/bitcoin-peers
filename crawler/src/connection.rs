@@ -7,23 +7,25 @@
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin_peers_connection::{Connection, ConnectionConfiguration, ConnectionError, Peer};
 use log::debug;
+use std::future::Future;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
 /// Internal trait for bitcoin peer connections that can send and receive messages.
 ///
-/// This trait abstracts the core operations needed for crawling, allowing
-/// for easy testing with mock implementations.
+/// # Trait Bounds
+///
+/// * `Send` - Required because connections are used in `tokio::spawn()` tasks that may
+///   run on different threads. The async methods return futures that capture `&self` or
+///   `&mut self`, and for these futures to be `Send`, the implementor must be `Send`.
 pub trait PeerConnection: Send {
     fn send(
         &mut self,
         message: NetworkMessage,
-    ) -> impl std::future::Future<Output = Result<(), ConnectionError>> + Send;
-    fn receive(
-        &mut self,
-    ) -> impl std::future::Future<Output = Result<NetworkMessage, ConnectionError>> + Send;
-    fn peer(&self) -> impl std::future::Future<Output = Peer> + Send;
+    ) -> impl Future<Output = Result<(), ConnectionError>> + Send;
+    fn receive(&mut self) -> impl Future<Output = Result<NetworkMessage, ConnectionError>> + Send;
+    fn peer(&self) -> impl Future<Output = Peer> + Send;
 
     /// Requests peer addresses from this connection by sending a getaddr message.
     ///
@@ -38,7 +40,7 @@ pub trait PeerConnection: Send {
     fn get_peers(
         &mut self,
         peer_timeout: Duration,
-    ) -> impl std::future::Future<Output = Result<Vec<Peer>, ConnectionError>> + Send {
+    ) -> impl Future<Output = Result<Vec<Peer>, ConnectionError>> + Send {
         async move {
             self.send(NetworkMessage::GetAddr).await?;
             debug!("Sent getaddr message to peer");
@@ -130,17 +132,15 @@ impl PeerConnection for Connection {
     fn send(
         &mut self,
         message: NetworkMessage,
-    ) -> impl std::future::Future<Output = Result<(), ConnectionError>> + Send {
+    ) -> impl Future<Output = Result<(), ConnectionError>> + Send {
         self.send(message)
     }
 
-    fn receive(
-        &mut self,
-    ) -> impl std::future::Future<Output = Result<NetworkMessage, ConnectionError>> + Send {
+    fn receive(&mut self) -> impl Future<Output = Result<NetworkMessage, ConnectionError>> + Send {
         self.receive()
     }
 
-    fn peer(&self) -> impl std::future::Future<Output = Peer> + Send {
+    fn peer(&self) -> impl Future<Output = Peer> + Send {
         self.peer()
     }
 }
@@ -149,14 +149,26 @@ impl PeerConnection for Connection {
 ///
 /// This trait enables dependency injection for connection creation,
 /// allowing different implementations for production and testing.
+///
+/// # Trait Bounds
+///
+/// * `Clone` - Required because `CrawlSession<C>` derives `Clone` and each spawned
+///   processing task needs its own copy of the session (including the connector).
+/// * `Send` - Required because connectors are moved into `tokio::spawn()` tasks
+///   that may run on different threads.
+/// * `Sync` - Required for a subtle reason: even though connectors are cloned rather
+///   than shared, references to them (`&self.connector`) are held across await points
+///   in futures that must be `Send`. For `&T` to be `Send`, `T` must be `Sync`.
+/// * `'static` - Required because connectors are moved into `tokio::spawn()` which
+///   requires all captured data to have `'static` lifetime (no references to the stack).
 pub trait Connector: Clone + Send + Sync + 'static {
-    type Connection: PeerConnection + Send;
+    type Connection: PeerConnection;
 
     /// Create a connection to the specified peer.
     fn connect(
         &self,
         peer: &Peer,
-    ) -> impl std::future::Future<Output = Result<Self::Connection, ConnectionError>> + Send;
+    ) -> impl Future<Output = Result<Self::Connection, ConnectionError>> + Send;
 }
 
 /// Standard connector that creates real TCP connections.
@@ -179,7 +191,7 @@ impl Connector for PeerConnector {
     fn connect(
         &self,
         peer: &Peer,
-    ) -> impl std::future::Future<Output = Result<Self::Connection, ConnectionError>> + Send {
+    ) -> impl Future<Output = Result<Self::Connection, ConnectionError>> + Send {
         let peer = peer.clone();
         let network = self.network;
         let config = self.config.clone();
@@ -331,8 +343,7 @@ pub mod test_utils {
         fn connect(
             &self,
             _peer: &Peer,
-        ) -> impl std::future::Future<Output = Result<Self::Connection, ConnectionError>> + Send
-        {
+        ) -> impl Future<Output = Result<Self::Connection, ConnectionError>> + Send {
             let connections = self.connections.clone();
             async move {
                 connections.lock().unwrap().pop_front().ok_or_else(|| {
