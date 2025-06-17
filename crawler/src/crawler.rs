@@ -119,7 +119,6 @@ impl Crawler {
     pub async fn crawl(&self, seed: Peer) -> Result<Receiver<CrawlerMessage>, ConnectionError> {
         let (crawl_tx, crawl_rx) = mpsc::channel(1000);
 
-        // Create the connection configuration
         let connection_config = ConnectionConfiguration::non_listening(
             self.protocol_version,
             self.transport_policy,
@@ -127,9 +126,7 @@ impl Crawler {
             self.user_agent.clone(),
         );
 
-        // Create the connector
         let connector = PeerConnector::new(self.network, connection_config);
-
         let session = CrawlSession::new(self.session_config(), crawl_tx, connector);
 
         tokio::spawn(async move {

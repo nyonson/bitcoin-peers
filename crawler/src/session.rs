@@ -118,8 +118,10 @@ impl<C: Connector> CrawlSession<C> {
             .await
             .is_err()
         {
+            debug!("Failed to send Listening for {peer_info:?}");
             return TaskResult::ChannelClosed;
         }
+        debug!("Sent Listening for {peer_info:?}");
 
         match connection.get_peers(self.config.peer_timeout).await {
             Ok(discovered_peers) => {
@@ -144,6 +146,7 @@ impl<C: Connector> CrawlSession<C> {
                     if peer_discovery_tx.send(filtered_peers).is_err() {
                         return TaskResult::ChannelClosed;
                     }
+                    debug!("Sent peers for {peer_info:?}");
                     TaskResult::FoundPeers
                 } else {
                     TaskResult::NoPeersFound
@@ -203,9 +206,8 @@ impl<C: Connector> CrawlSession<C> {
                 last_log_time = Instant::now();
             }
 
-            // Wait for something to happen
             tokio::select! {
-                // New peers discovered, can be up to 1,000 in a batch.
+                // New peers discovered.
                 Some(peers) = peer_discovery_rx.recv() => {
                     for peer in peers {
                         // Skip if already tested
@@ -226,13 +228,14 @@ impl<C: Connector> CrawlSession<C> {
                         let done_tx = task_done_tx.clone();
 
                         active_tasks += 1;
+
+                        // Note: This is why PeerConnection methods need desugared syntax with + Send bounds.
+                        // The process() method is called within a spawned task, so all futures it awaits
+                        // (including those from connection.peer() and connection.get_peers()) must be Send.
                         tokio::spawn(async move {
                             let result = session.process(peer, discovery_tx).await;
                             done_tx.send(result).await.expect("Coordinator should always be listening for task completion");
                         });
-                        // Note: This is why PeerConnection methods need desugared syntax with + Send bounds.
-                        // The process() method is called within a spawned task, so all futures it awaits
-                        // (including those from connection.peer() and connection.get_peers()) must be Send.
                     }
                 }
                 // Task completed.
@@ -240,8 +243,21 @@ impl<C: Connector> CrawlSession<C> {
                     active_tasks -= 1;
                     debug!("Task completed with result: {result:?}");
 
-                    // Check if we're done: no more tasks running.
                     if active_tasks == 0 {
+                        // Having separate channels for peer discovery and task completion
+                        // allows for easy to reason about code, as well as avoiding
+                        // re-queueing in the "normal" state of max concurrency. But it
+                        // does introduce a race condition where a task done event is acted
+                        // upon before its peers are processed. This check re-queues those
+                        // peers if that happened and continues the processing loop.
+                        if matches!(result, TaskResult::FoundPeers) {
+                            if let Ok(peers) = peer_discovery_rx.try_recv() {
+                                debug!("Re-queuing peers after task completion");
+                                peer_discovery_tx.send(peers).expect("Cooridinator should always have receiever of channel");
+                                continue;
+                            }
+                        }
+
                         info!("Crawler exhausted - all peers processed");
                         break;
                     }
@@ -264,7 +280,7 @@ mod tests {
         let (crawl_tx, crawl_rx) = mpsc::channel(10);
         let config = SessionConfig {
             max_concurrent_tasks: 8,
-            peer_timeout: Duration::from_secs(30),
+            peer_timeout: Duration::from_millis(50),
         };
         let connector = MockConnector::new();
         let session = CrawlSession::new(config, crawl_tx, connector);
@@ -433,5 +449,111 @@ mod tests {
 
         // Should not send any discovered peers
         assert!(discovery_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_coordinate_terminates_with_circular_references() {
+        // Initialize logger for this test.
+        let _ = fern::Dispatch::new()
+            .format(|out, message, record| {
+                out.finish(format_args!(
+                    "[{}] {} - {}",
+                    record.level(),
+                    record.target(),
+                    message
+                ))
+            })
+            .level(log::LevelFilter::Debug)
+            .chain(std::io::stderr())
+            .apply();
+
+        let (session, mut crawl_rx) = create_test_session();
+
+        // Create three peers that will reference each other in a circle.
+        let peer_a = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 8333);
+        let peer_b = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 2)), 8333);
+        let peer_c = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(192, 168, 1, 3)), 8333);
+
+        // Mock connection for peer A that returns peer B and C.
+        let mut mock_conn_a = MockPeerConnection::new();
+        mock_conn_a.peer_info = peer_a.clone();
+        mock_conn_a.add_addr_message(vec![
+            (
+                peer_b.address.clone(),
+                peer_b.port,
+                bitcoin::p2p::ServiceFlags::NETWORK,
+            ),
+            (
+                peer_c.address.clone(),
+                peer_c.port,
+                bitcoin::p2p::ServiceFlags::NETWORK,
+            ),
+        ]);
+
+        // Mock connection for peer B that returns peer A and C (circular reference).
+        let mut mock_conn_b = MockPeerConnection::new();
+        mock_conn_b.peer_info = peer_b.clone();
+        mock_conn_b.add_addr_message(vec![
+            (
+                peer_a.address.clone(),
+                peer_a.port,
+                bitcoin::p2p::ServiceFlags::NETWORK,
+            ),
+            (
+                peer_c.address.clone(),
+                peer_c.port,
+                bitcoin::p2p::ServiceFlags::NETWORK,
+            ),
+        ]);
+
+        // Mock connection for peer C that returns peer A and B (circular reference).
+        let mut mock_conn_c = MockPeerConnection::new();
+        mock_conn_c.peer_info = peer_c.clone();
+        mock_conn_c.add_addr_message(vec![
+            (
+                peer_a.address.clone(),
+                peer_a.port,
+                bitcoin::p2p::ServiceFlags::NETWORK,
+            ),
+            (
+                peer_b.address.clone(),
+                peer_b.port,
+                bitcoin::p2p::ServiceFlags::NETWORK,
+            ),
+        ]);
+
+        // Add connections to the connector in the order they'll be requested, A is the seed.
+        session.connector.add_connection(mock_conn_a);
+        session.connector.add_connection(mock_conn_b);
+        session.connector.add_connection(mock_conn_c);
+
+        let mut seen_peers = HashSet::new();
+
+        // Run coordinate in the background - move session to drop it when done.
+        let peer_a_clone = peer_a.clone();
+        tokio::spawn(async move {
+            session.coordinate(peer_a_clone).await;
+        });
+
+        loop {
+            match crawl_rx.recv().await {
+                Some(CrawlerMessage::Listening(peer)) => {
+                    seen_peers.insert((peer.address, peer.port));
+                }
+                Some(CrawlerMessage::NonListening(_)) => {
+                    // Ignore non-listening messages.
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+
+        assert_eq!(seen_peers.len(), 3, "Should have seen 3 unique peers");
+
+        // Verify all three peers were discovered.
+        assert!(seen_peers.contains(&(peer_a.address, peer_a.port)));
+        assert!(seen_peers.contains(&(peer_b.address, peer_b.port)));
+        assert!(seen_peers.contains(&(peer_c.address, peer_c.port)));
     }
 }

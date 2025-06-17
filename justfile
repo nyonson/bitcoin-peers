@@ -75,6 +75,10 @@ STABLE_TOOLCHAIN := "1.87.0"
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --ignore-rust-version
   rm -f Cargo.lock
 
+# Debug single test.
+@debug test:
+  cargo +{{STABLE_TOOLCHAIN}} test --workspace --all-features {{test}}
+
 # Try an example: connection, crawler.
 @try example ip port="8333" log="info":
   just _try-{{example}} {{ip}} {{port}} {{log}}
