@@ -5,48 +5,48 @@
 
 # Explicit toolchain versions per hash for a chance at determinitic builds.
 # Versions can be found at https://github.com/rust-lang/rust/releases
-NIGHTLY_TOOLCHAIN := "nightly-2025-06-10"
-STABLE_TOOLCHAIN := "1.87.0"
+NIGHTLY_TOOLCHAIN := "nightly-2025-07-10"
+STABLE_TOOLCHAIN := "1.88.0"
 
 @_default:
     just --list
 
-# Light check including format and lint rules. 
-@check:
-  # Default to the nightly toolchain for modern format and lint rules.
-
+# Quick check including lints and formatting. Run "fix" mode for auto-fixes.
+@check mode="verify":
+  # Use nightly toolchain for modern format and lint rules.
   # Ensure the toolchain is installed and has the necessary components.
   rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} rustfmt clippy
+  just _check-{{mode}}
+
+# Verify check, fails if anything is off. Good for CI.
+@_check-verify:
   # Cargo's wrapper for rustfmt predates workspaces, so uses the "--all" flag instead of "--workspaces".
   cargo +{{NIGHTLY_TOOLCHAIN}} fmt --check --all
   # Lint all workspace members. Enable all feature flags. Check all targets (tests, examples) along with library code. Turn warnings into errors.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets -- -D warnings
-  # Checking the extremes: all features enabled as well as none. If features are additive, this should expose conflicts.
-  # If non-additive features (mutually exclusive) are defined, more specific commands are required.
-  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --no-default-features --all-targets
+  # Static analysis of types and lifetimes.
+  # Nightly toolchain required by benches target.
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --all-targets
 
 # Attempt any auto-fixes for format and lints.
-@fix:
-  # Ensure the toolchain is installed and has the necessary components.
-  rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} rustfmt clippy
+@_check-fix:
   # No --check flag to actually apply formatting.
   cargo +{{NIGHTLY_TOOLCHAIN}} fmt --all
   # Adding --fix flag to apply suggestions with --allow-dirty.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets --fix --allow-dirty -- -D warnings
 
-# Run a test suite: unit, msrv, or constraints.
-@test suite="unit":
+# Run a test suite: features, msrv, or constraints.
+@test suite="features":
   just _test-{{suite}}
 
 # Unit test suite.
-@_test-unit:
-  # Run all tests defined in the workspace.
-
+@_test-features:
   # Virtual workspace (no code in root) doesn't require the "--workspace" flag, but just being explicit.
   # "--all-features" for highest coverage, assuming features are additive so no conflicts.
   # "--all-targets" runs `lib` (unit, integration), `bin`, `test`, `bench`, `example` tests, but not doc code. 
+  cargo +{{STABLE_TOOLCHAIN}} test --workspace --no-default-features --all-targets
   cargo +{{STABLE_TOOLCHAIN}} test --workspace --all-features --all-targets
+  # Docs needs a separate compilation.
   cargo +{{STABLE_TOOLCHAIN}} test --workspace --all-features --doc
 
 # Check the MSRV.
