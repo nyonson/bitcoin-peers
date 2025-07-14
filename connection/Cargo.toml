@@ -13,12 +13,12 @@ categories = ["cryptography::cryptocurrencies"]
 [dependencies]
 bitcoin = { version = "0.32.4" }
 bip324 = { version = "0.7.0", features = ["tokio"] }
-tokio = { version = "1", features = ["net", "io-util", "time", "sync"] }
+tokio = { version = "1.6.0", features = ["net", "io-util", "time", "sync"] }
 log = { version = "0.4.8" }
 
 [dev-dependencies]
 clap = { version = "4.5.39", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1.6.0", features = ["macros", "rt-multi-thread", "signal"] }
 # Tricky to find a simple log implementation with low log version, MSRV, and depenencies.
 fern = { version = "0.7" }
 # For I/O mocking.

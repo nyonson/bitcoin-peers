@@ -204,6 +204,14 @@ impl<C: Connector> CrawlSession<C> {
             }
 
             tokio::select! {
+                // Having separate channels for peer discovery and task completion
+                // allows for easy to reason about code, like avoiding
+                // re-queueing found peers in the "normal" state of max concurrency.
+                // But it does introduce a race condition where a task done event is acted
+                // upon before its peers are processed if the select is un-biased.
+                // Ensuring the peers are acted upon before the task queue by
+                // adding bias to the select.
+                biased;
                 // New peers discovered.
                 Some(peers) = peer_discovery_rx.recv() => {
                     for peer in peers {
@@ -240,20 +248,6 @@ impl<C: Connector> CrawlSession<C> {
                     debug!("Task completed with result: {result:?}");
 
                     if active_tasks == 0 {
-                        // Having separate channels for peer discovery and task completion
-                        // allows for easy to reason about code, as well as avoiding
-                        // re-queueing in the "normal" state of max concurrency. But it
-                        // does introduce a race condition where a task done event is acted
-                        // upon before its peers are processed. This check re-queues those
-                        // peers if that happened and continues the processing loop.
-                        if matches!(result, TaskResult::FoundPeers) {
-                            if let Ok(peers) = peer_discovery_rx.try_recv() {
-                                debug!("Re-queuing peers after task completion");
-                                peer_discovery_tx.send(peers).expect("Cooridinator should always have receiever of channel");
-                                continue;
-                            }
-                        }
-
                         info!("Crawler exhausted - all peers processed");
                         break;
                     }
