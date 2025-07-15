@@ -27,6 +27,8 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Static analysis of types and lifetimes.
   # Nightly toolchain required by benches target.
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --all-targets
+  # Build documentation to catch any broken doc links or invalid rustdoc.
+  RUSTDOCFLAGS="-D warnings" cargo +{{STABLE_TOOLCHAIN}} doc --workspace --all-features --no-deps
 
 # Attempt any auto-fixes for format and lints.
 @_check-fix:
@@ -53,7 +55,6 @@ STABLE_TOOLCHAIN := "1.88.0"
 @_test-msrv:
   # Ensure that the code works with the stated minimum supported rust version (MSRV).
   # This implicitly relys on using the V3 resolver which is MSRV-aware.
-  
   # Handles creating sandboxed environments to ensure no newer binaries sneak in.
   cargo install cargo-msrv@0.18.4
   # MSRV tool doesn't have cargo's workspace flag behavior yet, need to verify each package separately.
@@ -64,7 +65,6 @@ STABLE_TOOLCHAIN := "1.88.0"
 @_test-constraints:
   # Ensure that the workspace code works with dependency versions at both extremes. This checks
   # that we are not unintentionally using new feautures of a dependency or removed ones.
-
   # Skipping "--all-targets" for these checks since tests and examples are not relevant for a library consumer.
   # Enabling "--all-features" so all dependencies are checked.
   # Clear any previously resolved versions and re-resolve to the minimums.
@@ -91,10 +91,8 @@ STABLE_TOOLCHAIN := "1.88.0"
 @_try-connection ip port="8333" log="info":
     cargo +{{STABLE_TOOLCHAIN}} run -p bitcoin-peers-connection --example connection -- --address {{ip}} --port {{port}} --log-level {{log}}
  
-# Publish a new version.
+# Publish a new version. Requires write privileges on upsream repository and crates.io.
 @publish crate version remote="upstream":
-  # Requires write privileges on upsream repository and crates.io.
-   
   # Publish guardrails: be on a clean master, updated changelog, updated manifest.
   if ! git diff --quiet || ! git diff --cached --quiet; then \
     echo "publish: Uncommitted changes"; exit 1; fi
