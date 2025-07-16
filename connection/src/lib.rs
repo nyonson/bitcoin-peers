@@ -16,7 +16,7 @@
 //! ```
 //! use bitcoin::Network;
 //! use bitcoin_peers_connection::{
-//!     Connection, ConnectionConfiguration, Peer, PeerProtocolVersion,
+//!     futures::Connection, ConnectionConfiguration, Peer, PeerProtocolVersion,
 //!     TransportPolicy, FeaturePreferences
 //! };
 //! use bitcoin::p2p::address::AddrV2;
@@ -39,11 +39,11 @@
 //! );
 //!
 //! // Establish connection with automatic handshake.
-//! let mut connection = Connection::tcp(peer, Network::Bitcoin, config).await?;
+//! let mut connection = Connection::connect(peer, Network::Bitcoin, config).await?;
 //!
 //! // Send and receive messages.
-//! connection.send(NetworkMessage::GetAddr).await?;
-//! let message = connection.receive().await?;
+//! connection.write(NetworkMessage::GetAddr).await?;
+//! let message = connection.read().await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -57,14 +57,14 @@
 //!
 //! # Connection
 //!
-//! * [`Connection`] - The main connection type that handles both sending and receiving.
-//! * [`ConnectionSender`] / [`ConnectionReceiver`] - Split connection for concurrent operations.
+//! * [`futures::Connection`] - The main async connection type that handles both sending and receiving.
+//! * [`futures::ConnectionWriter`] / [`futures::ConnectionReader`] - Split connection for concurrent operations.
 //!
 //! ## Split Connection for Concurrent Operations
 //!
 //! ```
 //! # use bitcoin::Network;
-//! # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy, FeaturePreferences};
+//! # use bitcoin_peers_connection::{futures::Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy, FeaturePreferences};
 //! # use bitcoin::p2p::message::NetworkMessage;
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! # let peer = Peer::new(bitcoin::p2p::address::AddrV2::Ipv4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 8333);
@@ -74,15 +74,15 @@
 //! #     FeaturePreferences::default(),
 //! #     None,
 //! # );
-//! let connection = Connection::tcp(peer, Network::Bitcoin, config).await?;
+//! let connection = Connection::connect(peer, Network::Bitcoin, config).await?;
 //! let (mut receiver, mut sender) = connection.into_split();
 //!
 //! // Can now send and receive concurrently from different tasks.
 //! tokio::spawn(async move {
-//!     sender.send(NetworkMessage::Ping(42)).await.unwrap();
+//!     sender.write(NetworkMessage::Ping(42)).await.unwrap();
 //! });
 //!
-//! let message = receiver.receive().await?;
+//! let message = receiver.read().await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -91,7 +91,7 @@
 //!
 //! ```
 //! # use bitcoin::Network;
-//! # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, PeerProtocolVersion, TransportPolicy, FeaturePreferences, UserAgent};
+//! # use bitcoin_peers_connection::{futures::Connection, ConnectionConfiguration, PeerProtocolVersion, TransportPolicy, FeaturePreferences, UserAgent};
 //! # use tokio::net::TcpListener;
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Configure for a listening node with custom user agent.
@@ -105,7 +105,7 @@
 //! // Accept incoming connections.
 //! let listener = TcpListener::bind("0.0.0.0:8333").await?;
 //! let (stream, _addr) = listener.accept().await?;
-//! let connection = Connection::tcp_accept(stream, Network::Bitcoin, config).await?;
+//! let connection = Connection::accept(stream, Network::Bitcoin, config).await?;
 //! # Ok(())
 //! # }
 //! ````
@@ -114,20 +114,18 @@
 //!
 //! * [`Transport`] - Lower-level transport abstraction over both v1 and v2.
 
-mod connection;
+pub mod connection;
+pub mod futures {
+    //! Re-export of async connection types for backward compatibility.
+    pub use crate::connection::futures::*;
+}
 mod peer;
-mod transport;
+pub mod transport;
 mod user_agent;
 
 pub use connection::{
-    AddrV2State, Connection, ConnectionConfiguration, ConnectionError, ConnectionReceiver,
-    ConnectionSender, ConnectionState, FeaturePreferences, SendHeadersState, TransportPolicy,
-    WtxidRelayState,
+    ConnectionConfiguration, ConnectionError, FeaturePreferences, TransportPolicy,
 };
 pub use peer::{Peer, PeerProtocolVersion, PeerServices};
-pub use transport::{
-    AsyncV1Transport, AsyncV1TransportReader, AsyncV1TransportWriter, AsyncV2Transport,
-    AsyncV2TransportReader, AsyncV2TransportWriter, Transport, TransportError, TransportReader,
-    TransportWriter,
-};
+pub use transport::{AsyncV1Transport, Transport};
 pub use user_agent::{UserAgent, UserAgentError};

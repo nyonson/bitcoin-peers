@@ -254,7 +254,7 @@ where
 /// # }
 /// ```
 ///
-/// The high-level [`Connection`](crate::Connection) type manages transport selection
+/// The high-level [`Connection`](crate::futures::Connection) type manages transport selection
 /// automatically based on protocol negotiation.
 #[derive(Debug)]
 pub enum Transport<R, W> {

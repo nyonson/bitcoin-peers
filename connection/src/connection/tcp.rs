@@ -1,10 +1,7 @@
 //! TCP-specific connections.
 
 use super::configuration::TransportPolicy;
-use super::{
-    AsyncConnection, AsyncConnectionReceiver, AsyncConnectionSender, ConnectionConfiguration,
-    ConnectionError,
-};
+use super::ConnectionError;
 use crate::peer::{Peer, PeerServices};
 use crate::transport::{Transport, TransportError};
 use crate::PeerProtocolVersion;
@@ -16,21 +13,6 @@ use std::net::{IpAddr, SocketAddr};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-
-/// A TCP-based connection to a bitcoin peer.
-///
-/// This is a convenience type alias for [`AsyncConnection`] with Tokio's TCP stream halves.
-pub type TcpConnection = AsyncConnection<BufReader<OwnedReadHalf>, OwnedWriteHalf>;
-
-/// A TCP-based connection receiver.
-///
-/// This is a convenience type alias for [`AsyncConnectionReceiver`] with Tokio's TCP read half.
-pub type TcpConnectionReceiver = AsyncConnectionReceiver<BufReader<OwnedReadHalf>>;
-
-/// A TCP-based connection sender.
-///
-/// This is a convenience type alias for [`AsyncConnectionSender`] with Tokio's TCP write half.
-pub type TcpConnectionSender = AsyncConnectionSender<OwnedWriteHalf>;
 
 /// Create a Peer from an incoming TCP connection.
 fn peer_from_socket_addr(socket_addr: SocketAddr) -> Peer {
@@ -166,55 +148,32 @@ async fn negotiate_inbound_transport(
     }
 }
 
-/// Establish a TCP connection to a bitcoin peer and perform the handshake.
+/// Establish a TCP connection to a bitcoin peer and negotiate the transport.
 ///
 /// This function handles:
 /// 1. TCP connection establishment.
 /// 2. TCP socket configuration (nodelay).
 /// 3. Transport protocol negotiation (tries v2, falls back to v1).
-/// 4. Version handshake.
 ///
 /// # Timeouts
 ///
 /// This function does not enforce any connection timeout. Callers should wrap
-/// the call with `tokio::time::timeout` if a timeout is desired:
-///
-/// ```no_run
-/// # use bitcoin::Network;
-/// # use bitcoin_peers_connection::{Connection, ConnectionConfiguration, Peer, PeerProtocolVersion, TransportPolicy, FeaturePreferences};
-/// # use bitcoin::p2p::address::AddrV2;
-/// # use std::net::Ipv4Addr;
-/// # use std::time::Duration;
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// # let peer = Peer::new(AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8333);
-/// # let config = ConnectionConfiguration::non_listening(
-/// #     PeerProtocolVersion::Known(70016),
-/// #     TransportPolicy::V2Required,
-/// #     FeaturePreferences::default(),
-/// #     None,
-/// # );
-/// let connection = tokio::time::timeout(
-///     Duration::from_secs(30),
-///     Connection::tcp(peer, Network::Bitcoin, config)
-/// ).await??;
-/// # Ok(())
-/// # }
-/// ```
+/// the call with `tokio::time::timeout` if a timeout is desired.
 ///
 /// # Arguments
 ///
 /// * `peer` - The bitcoin peer to connect to.
 /// * `network` - The bitcoin network to use.
-/// * `configuration` - Configuration for the connection.
+/// * `policy` - The transport policy to use for negotiation.
 ///
 /// # Returns
 ///
-/// A fully established and handshaked connection ready for use.
+/// A negotiated transport ready for use.
 pub async fn connect(
-    peer: Peer,
+    peer: &Peer,
     network: Network,
-    configuration: ConnectionConfiguration,
-) -> Result<TcpConnection, ConnectionError> {
+    policy: TransportPolicy,
+) -> Result<Transport<BufReader<OwnedReadHalf>, OwnedWriteHalf>, ConnectionError> {
     // Convert peer address to socket address
     let ip_addr = match &peer.address {
         AddrV2::Ipv4(ipv4) => IpAddr::V4(*ipv4),
@@ -224,38 +183,30 @@ pub async fn connect(
     let socket_addr = SocketAddr::new(ip_addr, peer.port);
 
     // Negotiate transport based on peer capabilities and configuration policy.
-    let transport =
-        negotiate_outbound_transport(socket_addr, network, &peer, configuration.transport_policy)
-            .await?;
-
-    let mut connection = AsyncConnection::new(peer, configuration, transport);
-    super::handshake::perform_handshake(&mut connection).await?;
-
-    Ok(connection)
+    negotiate_outbound_transport(socket_addr, network, peer, policy).await
 }
 
-/// Accept an incoming TCP connection from a bitcoin peer and perform the handshake.
+/// Accept an incoming TCP connection from a bitcoin peer and negotiate the transport.
 ///
 /// # Arguments
 ///
 /// * `stream` - The incoming TCP stream from a connecting peer.
 /// * `network` - The bitcoin network to use.
-/// * `configuration` - Configuration for the connection.
+/// * `policy` - The transport policy to use for negotiation.
 ///
 /// # Returns
 ///
-/// A fully established and handshaked connection ready for use.
+/// A tuple containing the negotiated transport and the peer information.
 ///
 /// # Notes
 ///
 /// Unlike outbound connections where we know the peer details beforehand,
-/// inbound connections start with unknown peer information that gets discovered
-/// during the handshake process.
+/// inbound connections start with unknown peer information derived from the socket address.
 pub async fn accept(
     stream: TcpStream,
     network: Network,
-    configuration: ConnectionConfiguration,
-) -> Result<TcpConnection, ConnectionError> {
+    policy: TransportPolicy,
+) -> Result<(Transport<BufReader<OwnedReadHalf>, OwnedWriteHalf>, Peer), ConnectionError> {
     configure_tcp_stream(&stream)?;
 
     let peer_addr = stream.peer_addr()?;
@@ -264,13 +215,7 @@ pub async fn accept(
     let (reader, writer) = stream.into_split();
     let buf_reader = BufReader::new(reader);
 
-    let transport =
-        negotiate_inbound_transport(network, buf_reader, writer, configuration.transport_policy)
-            .await?;
-    let mut connection = AsyncConnection::new(peer, configuration, transport);
+    let transport = negotiate_inbound_transport(network, buf_reader, writer, policy).await?;
 
-    // Perform handshake (peer will send version first, we respond).
-    super::handshake::perform_handshake(&mut connection).await?;
-
-    Ok(connection)
+    Ok((transport, peer))
 }

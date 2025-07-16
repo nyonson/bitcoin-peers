@@ -4,7 +4,6 @@
 # required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
 
 # Explicit toolchain versions per hash for a chance at determinitic builds.
-# Versions can be found at https://github.com/rust-lang/rust/releases
 NIGHTLY_TOOLCHAIN := "nightly-2025-07-10"
 STABLE_TOOLCHAIN := "1.88.0"
 
@@ -74,10 +73,6 @@ STABLE_TOOLCHAIN := "1.88.0"
   rm -f Cargo.lock
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --ignore-rust-version
   rm -f Cargo.lock
-
-# Debug single test.
-@debug test:
-  cargo +{{STABLE_TOOLCHAIN}} test --workspace --all-features {{test}}
 
 # Try an example: connection, crawler.
 @try example ip port="8333" log="info":

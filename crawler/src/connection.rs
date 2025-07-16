@@ -9,7 +9,9 @@
 //! So RPITIT syntax is used instead.
 
 use bitcoin::p2p::message::NetworkMessage;
-use bitcoin_peers_connection::{Connection, ConnectionConfiguration, ConnectionError, Peer};
+use bitcoin_peers_connection::{
+    futures::Connection, ConnectionConfiguration, ConnectionError, Peer,
+};
 use log::debug;
 use std::future::Future;
 use std::net::IpAddr;
@@ -137,11 +139,11 @@ impl PeerConnection for Connection {
         &mut self,
         message: NetworkMessage,
     ) -> impl Future<Output = Result<(), ConnectionError>> + Send {
-        self.send(message)
+        self.write(message)
     }
 
     fn receive(&mut self) -> impl Future<Output = Result<NetworkMessage, ConnectionError>> + Send {
-        self.receive()
+        self.read()
     }
 
     fn peer(&self) -> impl Future<Output = Peer> + Send {
@@ -199,7 +201,7 @@ impl Connector for PeerConnector {
         let peer = peer.clone();
         let network = self.network;
         let config = self.config.clone();
-        async move { Connection::tcp(peer, network, config).await }
+        async move { Connection::connect(peer, network, config).await }
     }
 }
 

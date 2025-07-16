@@ -8,10 +8,11 @@
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
-use bitcoin_peers_connection::{
-    Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
-    TransportPolicy, UserAgent,
+use bitcoin_peers_connection::connection::futures::Connection;
+use bitcoin_peers_connection::connection::{
+    ConnectionConfiguration, FeaturePreferences, TransportPolicy,
 };
+use bitcoin_peers_connection::{Peer, PeerProtocolVersion, UserAgent};
 use clap::Parser;
 use log::{debug, error, info};
 use std::net::IpAddr;
@@ -116,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Attempting connection to {peer} with 30s timeout...");
     let connection = match tokio::time::timeout(
         Duration::from_secs(30),
-        Connection::tcp(peer, network, config),
+        Connection::connect(peer, network, config),
     )
     .await
     {
@@ -163,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
                 // Handle incoming messages.
-                result = receiver.receive() => {
+                result = receiver.read() => {
                     match result {
                         Ok(msg) => match msg {
                             NetworkMessage::Ping(nonce) => {
@@ -213,7 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // Handle incoming ping requests that need pong responses.
                 Some(ping_nonce) = ping_rx.recv() => {
-                    if let Err(e) = sender.send(NetworkMessage::Pong(ping_nonce)).await {
+                    if let Err(e) = sender.write(NetworkMessage::Pong(ping_nonce)).await {
                         error!("Failed to send Pong: {e}");
                         break;
                     }
@@ -222,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Send periodic pings.
                 _ = ping_interval.tick() => {
                     // Send a ping
-                    if let Err(e) = sender.send(NetworkMessage::Ping(nonce)).await {
+                    if let Err(e) = sender.write(NetworkMessage::Ping(nonce)).await {
                         error!("Failed to send Ping: {e}");
                         break;
                     }

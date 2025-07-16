@@ -8,7 +8,7 @@ use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{
-    Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
+    futures::Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
     TransportPolicy, UserAgent,
 };
 use corepc_node as bitcoind;
@@ -61,20 +61,20 @@ async fn test_connection_v1() {
     );
 
     // Establish connection (should fall back to V1).
-    let mut connection = Connection::tcp(peer, Network::Regtest, config)
+    let mut connection = Connection::connect(peer, Network::Regtest, config)
         .await
         .expect("Failed to establish connection");
 
     // The connection should be established and handshake completed.
     // Send a ping message.
     connection
-        .send(NetworkMessage::Ping(NONCE))
+        .write(NetworkMessage::Ping(NONCE))
         .await
         .expect("Failed to send ping");
 
     // Wait for pong response.
     let response = loop {
-        let msg = timeout(Duration::from_secs(5), connection.receive())
+        let msg = timeout(Duration::from_secs(5), connection.read())
             .await
             .expect("Timeout waiting for response")
             .expect("Failed to receive message");
@@ -105,17 +105,17 @@ async fn test_connection_v2() {
         Some(UserAgent::new("/bitcoin-peers-test:1.0/").unwrap()),
     );
 
-    let mut connection = Connection::tcp(peer, Network::Regtest, config)
+    let mut connection = Connection::connect(peer, Network::Regtest, config)
         .await
         .expect("Failed to establish V2 connection");
 
     connection
-        .send(NetworkMessage::Ping(NONCE))
+        .write(NetworkMessage::Ping(NONCE))
         .await
         .expect("Failed to send ping");
 
     let response = loop {
-        let msg = timeout(Duration::from_secs(5), connection.receive())
+        let msg = timeout(Duration::from_secs(5), connection.read())
             .await
             .expect("Timeout waiting for response")
             .expect("Failed to receive message");
@@ -144,19 +144,19 @@ async fn test_connection_split() {
         Some(UserAgent::new("/bitcoin-peers-test:1.0/").unwrap()),
     );
 
-    let connection = Connection::tcp(peer, Network::Regtest, config)
+    let connection = Connection::connect(peer, Network::Regtest, config)
         .await
         .expect("Failed to establish connection");
     let (mut receiver, mut sender) = connection.into_split();
 
     sender
-        .send(NetworkMessage::Ping(NONCE))
+        .write(NetworkMessage::Ping(NONCE))
         .await
         .expect("Failed to send ping");
 
     let mut received_pong = false;
     for _ in 0..10 {
-        match receiver.receive().await {
+        match receiver.read().await {
             Ok(msg) => {
                 println!("Received message: {msg:?}");
                 match msg {
@@ -166,7 +166,7 @@ async fn test_connection_split() {
                     }
                     NetworkMessage::Ping(nonce) => {
                         sender
-                            .send(NetworkMessage::Pong(nonce))
+                            .write(NetworkMessage::Pong(nonce))
                             .await
                             .expect("Failed to send pong");
                     }
