@@ -64,6 +64,7 @@ impl V1ReceiveState {
 pub struct AsyncV1TransportWriter<W> {
     /// The bitcoin network magic bytes.
     network_magic: Magic,
+    /// The IO writer.
     writer: W,
 }
 
@@ -101,6 +102,7 @@ pub struct AsyncV1TransportReader<R> {
     network_magic: Magic,
     /// Current state of the receive operation.
     receive_state: V1ReceiveState,
+    /// The IO reader.
     reader: R,
 }
 

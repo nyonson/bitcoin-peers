@@ -61,7 +61,6 @@ mod v2;
 pub use v1::{AsyncV1Transport, AsyncV1TransportReader, AsyncV1TransportWriter};
 pub use v2::{AsyncV2Transport, AsyncV2TransportReader, AsyncV2TransportWriter};
 
-use bip324::AsyncProtocol;
 use bitcoin::consensus::encode;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::Magic;
@@ -276,8 +275,8 @@ where
     }
 
     /// Create a new V2 transport.
-    pub fn v2(protocol: AsyncProtocol, reader: R, writer: W) -> Self {
-        Self::V2(AsyncV2Transport::new(protocol, reader, writer))
+    pub fn v2(protocol: bip324::futures::Protocol<R, W>) -> Self {
+        Self::V2(AsyncV2Transport::new(protocol))
     }
 
     /// Split this transport into separate receiver and sender halves.

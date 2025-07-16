@@ -3,9 +3,7 @@
 //! This module is a light wrapper around the encryption and serialization.
 
 use crate::transport::TransportError;
-use bip324::AsyncProtocol;
 use bitcoin::p2p::message::NetworkMessage;
-use std::any::type_name;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Implements the bitcoin v2 protocol transport using BIP-324 encryption.
@@ -33,18 +31,12 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    /// Create a new [`AsyncV2Transport`] from a BIP-324 AsyncProtocol.
-    pub fn new(protocol: AsyncProtocol, reader: R, writer: W) -> Self {
-        let (reader_cipher, writer_cipher) = protocol.into_split();
+    /// Create a new [`AsyncV2Transport`] from a BIP-324 Protocol.
+    pub fn new(protocol: bip324::futures::Protocol<R, W>) -> Self {
+        let (reader, writer) = protocol.into_split();
         Self {
-            writer: AsyncV2TransportWriter {
-                cipher: writer_cipher,
-                writer,
-            },
-            reader: AsyncV2TransportReader {
-                cipher: reader_cipher,
-                reader,
-            },
+            writer: AsyncV2TransportWriter { writer },
+            reader: AsyncV2TransportReader { reader },
         }
     }
 
@@ -66,16 +58,14 @@ where
 
 /// Implements the receiver half of the bitcoin v2 protocol transport.
 pub struct AsyncV2TransportReader<R> {
-    cipher: bip324::AsyncProtocolReader,
-    reader: R,
+    reader: bip324::futures::ProtocolReader<R>,
 }
 
 // Manual Debug implementation because bip324::AsyncProtocolReader doesn't implement Debug
 impl<R> std::fmt::Debug for AsyncV2TransportReader<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AsyncV2TransportReader")
-            .field("cipher", &"<bip324::AsyncProtocolReader>")
-            .field("reader", &type_name::<R>())
+            .field("cipher", &"<bip324::futures::ProtocolReader>")
             .finish()
     }
 }
@@ -84,16 +74,16 @@ impl<R> AsyncV2TransportReader<R>
 where
     R: AsyncRead + Unpin + Send,
 {
-    /// Creates a new receiver from a BIP-324 [`bip324::AsyncProtocolReader`].
-    pub fn new(cipher: bip324::AsyncProtocolReader, reader: R) -> Self {
-        Self { cipher, reader }
+    /// Creates a new receiver from a BIP-324 [`bip324::futures::ProtocolReader`].
+    pub fn new(reader: bip324::futures::ProtocolReader<R>) -> Self {
+        Self { reader }
     }
 
     /// Receives a bitcoin network message from the reader.
     pub async fn read(&mut self) -> Result<NetworkMessage, TransportError> {
         let message = self
-            .cipher
-            .read_and_decrypt(&mut self.reader)
+            .reader
+            .read()
             .await
             .map_err(|_| TransportError::Encryption)?;
 
@@ -103,16 +93,14 @@ where
 
 /// Implements the sender half of the bitcoin v2 protocol transport.
 pub struct AsyncV2TransportWriter<W> {
-    cipher: bip324::AsyncProtocolWriter,
-    writer: W,
+    writer: bip324::futures::ProtocolWriter<W>,
 }
 
 // Manual Debug implementation because bip324::AsyncProtocolWriter doesn't implement Debug
 impl<W> std::fmt::Debug for AsyncV2TransportWriter<W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AsyncV2TransportWriter")
-            .field("cipher", &"<bip324::AsyncProtocolWriter>")
-            .field("writer", &type_name::<W>())
+            .field("cipher", &"<bip324::futures::ProtocolWriter>")
             .finish()
     }
 }
@@ -121,17 +109,17 @@ impl<W> AsyncV2TransportWriter<W>
 where
     W: AsyncWrite + Unpin + Send,
 {
-    /// Creates a new sender from a BIP-324 [`bip324::AsyncProtocolWriter`].
-    pub fn new(cipher: bip324::AsyncProtocolWriter, writer: W) -> Self {
-        Self { cipher, writer }
+    /// Creates a new sender from a BIP-324 [`bip324::futures::ProtocolWriter`].
+    pub fn new(writer: bip324::futures::ProtocolWriter<W>) -> Self {
+        Self { writer }
     }
 
     /// Sends a bitcoin network message to the writer.
     pub async fn write(&mut self, message: NetworkMessage) -> Result<(), TransportError> {
-        let data = bip324::serde::serialize(message).expect("infallible");
+        let data = bip324::serde::serialize(message);
 
-        self.cipher
-            .encrypt_and_write(&data, &mut self.writer)
+        self.writer
+            .write(&data)
             .await
             .map_err(|_| TransportError::Encryption)
     }

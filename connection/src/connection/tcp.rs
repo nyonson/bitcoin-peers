@@ -6,25 +6,26 @@ use super::{
     ConnectionError,
 };
 use crate::peer::{Peer, PeerServices};
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportError};
 use crate::PeerProtocolVersion;
-use bip324::{AsyncProtocol, Role};
+use bip324::Role;
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::ServiceFlags;
 use bitcoin::Network;
 use std::net::{IpAddr, SocketAddr};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
 /// A TCP-based connection to a bitcoin peer.
 ///
 /// This is a convenience type alias for [`AsyncConnection`] with Tokio's TCP stream halves.
-pub type TcpConnection = AsyncConnection<OwnedReadHalf, OwnedWriteHalf>;
+pub type TcpConnection = AsyncConnection<BufReader<OwnedReadHalf>, OwnedWriteHalf>;
 
 /// A TCP-based connection receiver.
 ///
 /// This is a convenience type alias for [`AsyncConnectionReceiver`] with Tokio's TCP read half.
-pub type TcpConnectionReceiver = AsyncConnectionReceiver<OwnedReadHalf>;
+pub type TcpConnectionReceiver = AsyncConnectionReceiver<BufReader<OwnedReadHalf>>;
 
 /// A TCP-based connection sender.
 ///
@@ -69,7 +70,7 @@ async fn negotiate_outbound_transport(
     network: Network,
     peer: &Peer,
     policy: TransportPolicy,
-) -> Result<Transport<OwnedReadHalf, OwnedWriteHalf>, ConnectionError> {
+) -> Result<Transport<BufReader<OwnedReadHalf>, OwnedWriteHalf>, ConnectionError> {
     let peer_supports_v2 = match peer.services {
         PeerServices::Unknown => true,
         PeerServices::Known(flags) => flags.has(ServiceFlags::P2P_V2),
@@ -81,32 +82,27 @@ async fn negotiate_outbound_transport(
     if !peer_supports_v2 && matches!(policy, TransportPolicy::V2Preferred) {
         let stream = establish_tcp_connection(socket_addr).await?;
         let (reader, writer) = stream.into_split();
+        let buf_reader = BufReader::new(reader);
         log::info!(
             "Using v1 plaintext connection to {:?} (no P2P_V2 flag)",
             peer.address
         );
-        return Ok(Transport::v1(network.magic(), reader, writer));
+        return Ok(Transport::v1(network.magic(), buf_reader, writer));
     }
 
     let stream = establish_tcp_connection(socket_addr).await?;
-    let (mut reader, mut writer) = stream.into_split();
+    let (reader, writer) = stream.into_split();
+    let buf_reader = BufReader::new(reader);
 
-    match AsyncProtocol::new(
-        network,
-        Role::Initiator,
-        None,
-        None,
-        &mut reader,
-        &mut writer,
-    )
-    .await
+    match bip324::futures::Protocol::new(network, Role::Initiator, None, None, buf_reader, writer)
+        .await
     {
         Ok(v2) => {
             log::info!(
                 "Successfully established v2 encrypted connection to {:?}",
                 peer.address
             );
-            Ok(Transport::v2(v2, reader, writer))
+            Ok(Transport::v2(v2))
         }
         Err(e) => {
             log::debug!("V2 handshake failed for {:?}: {:?}", peer.address, e);
@@ -120,9 +116,10 @@ async fn negotiate_outbound_transport(
                     // Need fresh connection for v1 since v2 protocol probably caused disconnection.
                     let stream = establish_tcp_connection(socket_addr).await?;
                     let (reader, writer) = stream.into_split();
+                    let buf_reader = BufReader::new(reader);
 
                     log::info!("Using v1 plaintext connection to {:?}", peer.address);
-                    Ok(Transport::v1(network.magic(), reader, writer))
+                    Ok(Transport::v1(network.magic(), buf_reader, writer))
                 }
             }
         }
@@ -132,44 +129,39 @@ async fn negotiate_outbound_transport(
 /// Negotiate transport protocol for inbound TCP connection.
 ///
 /// For inbound connections, we act as the responder and must detect whether
-/// the peer is attempting a v2 (BIP324) or v1 (legacy) connection.
+/// the peer is attempting a v2 (BIP324) or v1 (legacy) connection by checking
+/// the first 4 bytes for network magic.
 async fn negotiate_inbound_transport(
     network: Network,
-    mut reader: OwnedReadHalf,
-    mut writer: OwnedWriteHalf,
+    mut reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
     policy: TransportPolicy,
-) -> Result<Transport<OwnedReadHalf, OwnedWriteHalf>, ConnectionError> {
-    // Try to establish v2 transport as responder.
-    match AsyncProtocol::new(
-        network,
-        Role::Responder,
-        None,
-        None,
-        &mut reader,
-        &mut writer,
-    )
-    .await
+) -> Result<Transport<BufReader<OwnedReadHalf>, OwnedWriteHalf>, ConnectionError> {
+    // Peek at first 4 bytes to detect protocol.
+    let peeked = reader.fill_buf().await?;
+    if peeked.len() >= 4 && peeked[0..4] == network.magic().to_bytes() {
+        match policy {
+            TransportPolicy::V2Required => {
+                log::error!("V1 inbound connection detected but V2 transport required");
+                return Err(ConnectionError::V2TransportRequired);
+            }
+            TransportPolicy::V2Preferred => {
+                log::info!("Detected v1 plaintext inbound connection");
+                return Ok(Transport::v1(network.magic(), reader, writer));
+            }
+        }
+    }
+
+    // Not v1 magic, attempt v2 handshake.
+    match bip324::futures::Protocol::new(network, Role::Responder, None, None, reader, writer).await
     {
         Ok(v2) => {
             log::info!("Successfully established v2 encrypted inbound connection");
-            Ok(Transport::v2(v2, reader, writer))
+            Ok(Transport::v2(v2))
         }
         Err(e) => {
-            log::debug!("V2 handshake failed for inbound connection: {e:?}");
-
-            match policy {
-                TransportPolicy::V2Required => {
-                    log::error!(
-                        "V2 transport required but could not be established for inbound connection"
-                    );
-                    Err(ConnectionError::V2TransportRequired)
-                }
-                TransportPolicy::V2Preferred => {
-                    // For inbound connections, if v2 fails we can try v1 with the existing stream.
-                    log::info!("Using v1 plaintext inbound connection");
-                    Ok(Transport::v1(network.magic(), reader, writer))
-                }
-            }
+            log::error!("V2 handshake failed for inbound connection: {e:?}");
+            Err(ConnectionError::TransportFailed(TransportError::Encryption))
         }
     }
 }
@@ -270,8 +262,10 @@ pub async fn accept(
     let peer = peer_from_socket_addr(peer_addr);
 
     let (reader, writer) = stream.into_split();
+    let buf_reader = BufReader::new(reader);
+
     let transport =
-        negotiate_inbound_transport(network, reader, writer, configuration.transport_policy)
+        negotiate_inbound_transport(network, buf_reader, writer, configuration.transport_policy)
             .await?;
     let mut connection = AsyncConnection::new(peer, configuration, transport);
 
