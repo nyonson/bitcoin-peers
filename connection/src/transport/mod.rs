@@ -59,7 +59,7 @@ mod v1;
 mod v2;
 
 pub use v1::{AsyncV1Transport, AsyncV1TransportReader, AsyncV1TransportWriter};
-pub use v2::{AsyncV2Transport, AsyncV2TransportReceiver, AsyncV2TransportSender};
+pub use v2::{AsyncV2Transport, AsyncV2TransportReader, AsyncV2TransportWriter};
 
 use bip324::AsyncProtocol;
 use bitcoin::consensus::encode;
@@ -125,7 +125,7 @@ pub enum TransportReader<R> {
     /// V1 protocol with plaintext messages receiver.
     V1(AsyncV1TransportReader<R>),
     /// V2 protocol using BIP-324 encrypted transport receiver.
-    V2(AsyncV2TransportReceiver, R),
+    V2(AsyncV2TransportReader<R>),
 }
 
 /// Writer half of a split transport.
@@ -137,7 +137,7 @@ pub enum TransportWriter<W> {
     /// V1 protocol with plaintext messages sender.
     V1(AsyncV1TransportWriter<W>),
     /// V2 protocol using BIP-324 encrypted transport sender.
-    V2(AsyncV2TransportSender, W),
+    V2(AsyncV2TransportWriter<W>),
 }
 
 impl<R> TransportReader<R>
@@ -170,7 +170,7 @@ where
     pub async fn read(&mut self) -> Result<NetworkMessage, TransportError> {
         match self {
             TransportReader::V1(v1) => v1.read().await,
-            TransportReader::V2(v2, reader) => v2.receive(reader).await,
+            TransportReader::V2(v2) => v2.read().await,
         }
     }
 }
@@ -202,7 +202,7 @@ where
     pub async fn write(&mut self, message: NetworkMessage) -> Result<(), TransportError> {
         match self {
             TransportWriter::V1(v1) => v1.write(message).await.map_err(TransportError::Io),
-            TransportWriter::V2(v2, writer) => v2.send(message, writer).await,
+            TransportWriter::V2(v2) => v2.write(message).await,
         }
     }
 }
@@ -262,7 +262,7 @@ pub enum Transport<R, W> {
     /// V1 protocol with plaintext messages.
     V1(AsyncV1Transport<R, W>),
     /// V2 protocol using BIP-324 encrypted transport.
-    V2(AsyncV2Transport, R, W),
+    V2(AsyncV2Transport<R, W>),
 }
 
 impl<R, W> Transport<R, W>
@@ -277,7 +277,7 @@ where
 
     /// Create a new V2 transport.
     pub fn v2(protocol: AsyncProtocol, reader: R, writer: W) -> Self {
-        Self::V2(AsyncV2Transport::new(protocol), reader, writer)
+        Self::V2(AsyncV2Transport::new(protocol, reader, writer))
     }
 
     /// Split this transport into separate receiver and sender halves.
@@ -294,12 +294,9 @@ where
                 let (receiver, sender) = v1.into_split();
                 (TransportReader::V1(receiver), TransportWriter::V1(sender))
             }
-            Self::V2(v2, reader, writer) => {
+            Self::V2(v2) => {
                 let (receiver, sender) = v2.into_split();
-                (
-                    TransportReader::V2(receiver, reader),
-                    TransportWriter::V2(sender, writer),
-                )
+                (TransportReader::V2(receiver), TransportWriter::V2(sender))
             }
         }
     }
@@ -327,7 +324,7 @@ where
     pub async fn write(&mut self, message: NetworkMessage) -> Result<(), TransportError> {
         match self {
             Self::V1(v1) => v1.write(message).await,
-            Self::V2(v2, _, writer) => v2.send(message, writer).await,
+            Self::V2(v2) => v2.write(message).await,
         }
     }
 
@@ -357,7 +354,7 @@ where
     pub async fn read(&mut self) -> Result<NetworkMessage, TransportError> {
         match self {
             Self::V1(v1) => v1.read().await,
-            Self::V2(v2, reader, _) => v2.receive(reader).await,
+            Self::V2(v2) => v2.read().await,
         }
     }
 }
