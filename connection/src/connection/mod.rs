@@ -410,8 +410,12 @@ mod tests {
         R: tokio::io::AsyncRead + Unpin + Send,
         W: tokio::io::AsyncWrite + Unpin + Send,
     {
-        let transport = Transport::V1(AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN));
-        AsyncConnection::new(peer, config, transport, reader, writer)
+        let transport = Transport::V1(
+            AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN),
+            reader,
+            writer,
+        );
+        AsyncConnection::new(peer, config, transport)
     }
 
     fn create_raw_message(magic: bitcoin::p2p::Magic, message: NetworkMessage) -> Vec<u8> {

@@ -68,7 +68,7 @@ impl std::fmt::Debug for AsyncV2TransportReceiver {
 }
 
 impl AsyncV2TransportReceiver {
-    /// Creates a new receiver from a BIP-324 [`AsyncProtocolReader`].
+    /// Creates a new receiver from a BIP-324 [`bip324::AsyncProtocolReader`].
     pub fn new(reader: bip324::AsyncProtocolReader) -> Self {
         Self { reader }
     }
@@ -102,7 +102,7 @@ impl std::fmt::Debug for AsyncV2TransportSender {
 }
 
 impl AsyncV2TransportSender {
-    /// Creates a new sender from a BIP-324 [`AsyncProtocolWriter`].
+    /// Creates a new sender from a BIP-324 [`bip324::AsyncProtocolWriter`].
     pub fn new(writer: bip324::AsyncProtocolWriter) -> Self {
         Self { writer }
     }

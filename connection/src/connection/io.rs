@@ -8,7 +8,7 @@ use super::configuration::ConnectionConfiguration;
 use super::error::ConnectionError;
 use super::state::ConnectionState;
 use crate::peer::Peer;
-use crate::transport::{Transport, TransportReceiver, TransportSender};
+use crate::transport::{Transport, TransportReader, TransportWriter};
 use bitcoin::p2p::message::NetworkMessage;
 use log::debug;
 use std::sync::Arc;
@@ -26,10 +26,8 @@ where
 {
     /// The peer this connection is established with.
     peer: Arc<Mutex<Peer>>,
-    /// Transport handles serialization and encryption of messages.
-    transport_sender: TransportSender,
-    /// The writer half of the connection.
-    writer: W,
+    /// Transport handles serialization and encryption of messages, and owns the writer.
+    transport_sender: TransportWriter<W>,
 }
 
 impl<W> std::fmt::Display for AsyncConnectionSender<W>
@@ -38,8 +36,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let transport = match &self.transport_sender {
-            TransportSender::V1(_) => "V1",
-            TransportSender::V2(_) => "V2",
+            TransportWriter::V1(..) => "V1",
+            TransportWriter::V2(..) => "V2",
         };
 
         let peer_info = self
@@ -56,16 +54,11 @@ impl<W> AsyncConnectionSender<W>
 where
     W: AsyncWrite + Unpin + Send,
 {
-    /// Creates a new sender with the given transport sender and writer.
-    pub(super) fn new(
-        peer: Arc<Mutex<Peer>>,
-        transport_sender: TransportSender,
-        writer: W,
-    ) -> Self {
+    /// Creates a new sender with the given transport sender.
+    pub(super) fn new(peer: Arc<Mutex<Peer>>, transport_sender: TransportWriter<W>) -> Self {
         Self {
             peer,
             transport_sender,
-            writer,
         }
     }
 
@@ -77,7 +70,7 @@ where
     /// Send a message to the peer.
     pub async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
         self.transport_sender
-            .send(message, &mut self.writer)
+            .write(message)
             .await
             .map_err(ConnectionError::TransportFailed)
     }
@@ -94,10 +87,8 @@ where
 {
     /// The peer this connection is established with.
     peer: Arc<Mutex<Peer>>,
-    /// Transport handles deserialization and decryption of messages.
-    transport_receiver: TransportReceiver,
-    /// The reader half of the connection.
-    reader: R,
+    /// Transport handles deserialization and decryption of messages, and owns the reader.
+    transport_receiver: TransportReader<R>,
     /// State related to protocol negotiation.
     state: Arc<Mutex<ConnectionState>>,
 }
@@ -108,8 +99,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let transport = match &self.transport_receiver {
-            TransportReceiver::V1(_) => "V1",
-            TransportReceiver::V2(_) => "V2",
+            TransportReader::V1(..) => "V1",
+            TransportReader::V2(..) => "V2",
         };
 
         let peer_info = self
@@ -132,17 +123,15 @@ impl<R> AsyncConnectionReceiver<R>
 where
     R: AsyncRead + Unpin + Send,
 {
-    /// Creates a new receiver with the given transport receiver and reader.
+    /// Creates a new receiver with the given transport receiver.
     pub(super) fn new(
         peer: Arc<Mutex<Peer>>,
-        transport_receiver: TransportReceiver,
-        reader: R,
+        transport_receiver: TransportReader<R>,
         state: Arc<Mutex<ConnectionState>>,
     ) -> Self {
         Self {
             peer,
             transport_receiver,
-            reader,
             state,
         }
     }
@@ -167,7 +156,7 @@ where
     pub async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
         let message = self
             .transport_receiver
-            .receive(&mut self.reader)
+            .read()
             .await
             .map_err(ConnectionError::TransportFailed)?;
 
@@ -254,8 +243,8 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Get transport version from receiver
         let transport = match &self.receiver.transport_receiver {
-            TransportReceiver::V1(_) => "V1",
-            TransportReceiver::V2(_) => "V2",
+            TransportReader::V1(..) => "V1",
+            TransportReader::V2(..) => "V2",
         };
 
         let peer_info = self
@@ -283,17 +272,15 @@ where
     pub(crate) fn new(
         peer: Peer,
         configuration: ConnectionConfiguration,
-        transport: Transport,
-        reader: R,
-        writer: W,
+        transport: Transport<R, W>,
     ) -> Self {
         let (transport_receiver, transport_sender) = transport.into_split();
         let state = Arc::new(Mutex::new(ConnectionState::new()));
         let peer = Arc::new(Mutex::new(peer));
 
         let receiver =
-            AsyncConnectionReceiver::new(peer.clone(), transport_receiver, reader, state.clone());
-        let sender = AsyncConnectionSender::new(peer.clone(), transport_sender, writer);
+            AsyncConnectionReceiver::new(peer.clone(), transport_receiver, state.clone());
+        let sender = AsyncConnectionSender::new(peer.clone(), transport_sender);
 
         Self {
             configuration,

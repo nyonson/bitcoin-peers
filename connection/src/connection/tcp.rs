@@ -69,7 +69,7 @@ async fn negotiate_outbound_transport(
     network: Network,
     peer: &Peer,
     policy: TransportPolicy,
-) -> Result<(Transport, OwnedReadHalf, OwnedWriteHalf), ConnectionError> {
+) -> Result<Transport<OwnedReadHalf, OwnedWriteHalf>, ConnectionError> {
     let peer_supports_v2 = match peer.services {
         PeerServices::Unknown => true,
         PeerServices::Known(flags) => flags.has(ServiceFlags::P2P_V2),
@@ -85,7 +85,7 @@ async fn negotiate_outbound_transport(
             "Using v1 plaintext connection to {:?} (no P2P_V2 flag)",
             peer.address
         );
-        return Ok((Transport::v1(network.magic()), reader, writer));
+        return Ok(Transport::v1(network.magic(), reader, writer));
     }
 
     let stream = establish_tcp_connection(socket_addr).await?;
@@ -106,7 +106,7 @@ async fn negotiate_outbound_transport(
                 "Successfully established v2 encrypted connection to {:?}",
                 peer.address
             );
-            Ok((Transport::v2(v2), reader, writer))
+            Ok(Transport::v2(v2, reader, writer))
         }
         Err(e) => {
             log::debug!("V2 handshake failed for {:?}: {:?}", peer.address, e);
@@ -122,7 +122,7 @@ async fn negotiate_outbound_transport(
                     let (reader, writer) = stream.into_split();
 
                     log::info!("Using v1 plaintext connection to {:?}", peer.address);
-                    Ok((Transport::v1(network.magic()), reader, writer))
+                    Ok(Transport::v1(network.magic(), reader, writer))
                 }
             }
         }
@@ -138,7 +138,7 @@ async fn negotiate_inbound_transport(
     mut reader: OwnedReadHalf,
     mut writer: OwnedWriteHalf,
     policy: TransportPolicy,
-) -> Result<(Transport, OwnedReadHalf, OwnedWriteHalf), ConnectionError> {
+) -> Result<Transport<OwnedReadHalf, OwnedWriteHalf>, ConnectionError> {
     // Try to establish v2 transport as responder.
     match AsyncProtocol::new(
         network,
@@ -152,7 +152,7 @@ async fn negotiate_inbound_transport(
     {
         Ok(v2) => {
             log::info!("Successfully established v2 encrypted inbound connection");
-            Ok((Transport::v2(v2), reader, writer))
+            Ok(Transport::v2(v2, reader, writer))
         }
         Err(e) => {
             log::debug!("V2 handshake failed for inbound connection: {e:?}");
@@ -167,7 +167,7 @@ async fn negotiate_inbound_transport(
                 TransportPolicy::V2Preferred => {
                     // For inbound connections, if v2 fails we can try v1 with the existing stream.
                     log::info!("Using v1 plaintext inbound connection");
-                    Ok((Transport::v1(network.magic()), reader, writer))
+                    Ok(Transport::v1(network.magic(), reader, writer))
                 }
             }
         }
@@ -232,11 +232,11 @@ pub async fn connect(
     let socket_addr = SocketAddr::new(ip_addr, peer.port);
 
     // Negotiate transport based on peer capabilities and configuration policy.
-    let (transport, reader, writer) =
+    let transport =
         negotiate_outbound_transport(socket_addr, network, &peer, configuration.transport_policy)
             .await?;
 
-    let mut connection = AsyncConnection::new(peer, configuration, transport, reader, writer);
+    let mut connection = AsyncConnection::new(peer, configuration, transport);
     super::handshake::perform_handshake(&mut connection).await?;
 
     Ok(connection)
@@ -270,10 +270,10 @@ pub async fn accept(
     let peer = peer_from_socket_addr(peer_addr);
 
     let (reader, writer) = stream.into_split();
-    let (transport, reader, writer) =
+    let transport =
         negotiate_inbound_transport(network, reader, writer, configuration.transport_policy)
             .await?;
-    let mut connection = AsyncConnection::new(peer, configuration, transport, reader, writer);
+    let mut connection = AsyncConnection::new(peer, configuration, transport);
 
     // Perform handshake (peer will send version first, we respond).
     super::handshake::perform_handshake(&mut connection).await?;
