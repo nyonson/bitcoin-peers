@@ -126,7 +126,7 @@ pub use connection::{
 };
 pub use peer::{Peer, PeerProtocolVersion, PeerServices};
 pub use transport::{
-    AsyncV1Transport, AsyncV1TransportReceiver, AsyncV1TransportSender, AsyncV2Transport,
+    AsyncV1Transport, AsyncV1TransportReader, AsyncV1TransportWriter, AsyncV2Transport,
     AsyncV2TransportReceiver, AsyncV2TransportSender, Transport, TransportError, TransportReader,
     TransportWriter,
 };

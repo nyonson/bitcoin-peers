@@ -61,27 +61,34 @@ impl V1ReceiveState {
 
 /// Implements the sender half of the bitcoin v1 protocol transport.
 #[derive(Debug, Clone)]
-pub struct AsyncV1TransportSender {
+pub struct AsyncV1TransportWriter<W> {
     /// The bitcoin network magic bytes.
     network_magic: Magic,
+    writer: W,
 }
 
-impl AsyncV1TransportSender {
+impl<W> AsyncV1TransportWriter<W>
+where
+    W: AsyncWrite + Unpin + Send,
+{
     /// Create a new sender with the specified network magic.
-    pub fn new(network_magic: Magic) -> Self {
-        Self { network_magic }
+    pub fn new(network_magic: Magic, writer: W) -> Self {
+        Self {
+            network_magic,
+            writer,
+        }
     }
 
-    /// Sends a bitcoin network message to the writer.
-    pub async fn send<W>(&self, message: NetworkMessage, writer: &mut W) -> Result<(), io::Error>
+    /// Write a bitcoin network message.
+    pub async fn write(&mut self, message: NetworkMessage) -> Result<(), io::Error>
     where
         W: AsyncWrite + Unpin + Send,
     {
         let raw_msg = RawNetworkMessage::new(self.network_magic, message);
         let data = encode::serialize(&raw_msg);
 
-        writer.write_all(&data).await?;
-        writer.flush().await?;
+        self.writer.write_all(&data).await?;
+        self.writer.flush().await?;
 
         Ok(())
     }
@@ -89,27 +96,32 @@ impl AsyncV1TransportSender {
 
 /// Implements the receiver half of the bitcoin v1 protocol transport.
 #[derive(Debug)]
-pub struct AsyncV1TransportReceiver {
+pub struct AsyncV1TransportReader<R> {
     /// The bitcoin network magic bytes.
     network_magic: Magic,
     /// Current state of the receive operation.
     receive_state: V1ReceiveState,
+    reader: R,
 }
 
-impl AsyncV1TransportReceiver {
+impl<R> AsyncV1TransportReader<R>
+where
+    R: AsyncRead + Unpin + Send,
+{
     /// Create a new receiver with the specified network magic.
-    pub fn new(network_magic: Magic) -> Self {
+    pub fn new(network_magic: Magic, reader: R) -> Self {
         Self {
             network_magic,
             receive_state: V1ReceiveState::reading_header(),
+            reader,
         }
     }
 
-    /// Receives a bitcoin network message from the reader.
+    /// Read a bitcoin network message.
     ///
     /// This function is cancellation safe, meaning it can be safely used with `tokio::select!`
     /// and similar constructs without the risk of leaving the reader in an inconsistent state.
-    pub async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, TransportError>
+    pub async fn read(&mut self) -> Result<NetworkMessage, TransportError>
     where
         R: AsyncRead + Unpin + Send,
     {
@@ -117,7 +129,7 @@ impl AsyncV1TransportReceiver {
             match &mut self.receive_state {
                 V1ReceiveState::ReadingHeader { header, bytes_read } => {
                     while *bytes_read < HEADER_SIZE {
-                        let n = reader.read(&mut header[*bytes_read..]).await?;
+                        let n = self.reader.read(&mut header[*bytes_read..]).await?;
                         if n == 0 {
                             return Err(TransportError::Io(io::Error::new(
                                 io::ErrorKind::UnexpectedEof,
@@ -139,7 +151,7 @@ impl AsyncV1TransportReceiver {
 
                 V1ReceiveState::ReadingPayload { buffer, bytes_read } => {
                     while *bytes_read < buffer.len() {
-                        let n = reader.read(&mut buffer[*bytes_read..]).await?;
+                        let n = self.reader.read(&mut buffer[*bytes_read..]).await?;
                         if n == 0 {
                             return Err(TransportError::Io(io::Error::new(
                                 io::ErrorKind::UnexpectedEof,
@@ -179,17 +191,18 @@ impl AsyncV1TransportReceiver {
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // Connect to a bitcoin node.
-/// let mut stream = TcpStream::connect("127.0.0.1:8333").await?;
+/// let stream = TcpStream::connect("127.0.0.1:8333").await?;
+/// let (reader, writer) = stream.into_split();
 ///
 /// // Create a transport for mainnet.
-/// let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
+/// let mut transport = AsyncV1Transport::new(Magic::BITCOIN, reader, writer);
 ///
 /// // Send a message.
 /// let ping_message = NetworkMessage::Ping(42);
-/// transport.send(ping_message, &mut stream).await?;
+/// transport.write(ping_message).await?;
 ///
 /// // Receive a response.
-/// let response = transport.receive(&mut stream).await?;
+/// let response = transport.read().await?;
 ///
 /// // Handle the response.
 /// match response {
@@ -200,53 +213,44 @@ impl AsyncV1TransportReceiver {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct AsyncV1Transport {
+pub struct AsyncV1Transport<R, W> {
     /// The sender component.
-    sender: AsyncV1TransportSender,
+    writer: AsyncV1TransportWriter<W>,
     /// The receiver component.
-    receiver: AsyncV1TransportReceiver,
+    reader: AsyncV1TransportReader<R>,
 }
 
-impl AsyncV1Transport {
+impl<R, W> AsyncV1Transport<R, W>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
     /// Create a new [`AsyncV1Transport`] for the specified network magic.
-    pub fn new(network_magic: Magic) -> Self {
+    pub fn new(network_magic: Magic, reader: R, writer: W) -> Self {
         Self {
-            sender: AsyncV1TransportSender::new(network_magic),
-            receiver: AsyncV1TransportReceiver::new(network_magic),
+            writer: AsyncV1TransportWriter::new(network_magic, writer),
+            reader: AsyncV1TransportReader::new(network_magic, reader),
         }
     }
 
-    /// Receives a bitcoin network message from the reader.
+    /// Read a bitcoin network message.
     ///
     /// This function is cancellation safe, meaning it can be safely used with `tokio::select!`
     /// and similar constructs without the risk of leaving the reader in an inconsistent state.
-    pub async fn receive<R>(&mut self, reader: &mut R) -> Result<NetworkMessage, TransportError>
-    where
-        R: AsyncRead + Unpin + Send,
-    {
-        self.receiver.receive(reader).await
+    pub async fn read(&mut self) -> Result<NetworkMessage, TransportError> {
+        self.reader.read().await
     }
 
-    /// Sends a bitcoin network message to the writer.
-    pub async fn send<W>(
-        &self,
-        message: NetworkMessage,
-        writer: &mut W,
-    ) -> Result<(), TransportError>
-    where
-        W: AsyncWrite + Unpin + Send,
-    {
-        self.sender
-            .send(message, writer)
-            .await
-            .map_err(TransportError::Io)
+    /// Write a bitcoin network message.
+    pub async fn write(&mut self, message: NetworkMessage) -> Result<(), TransportError> {
+        self.writer.write(message).await.map_err(TransportError::Io)
     }
 
     /// Split this transport into separate reader and writer halves.
     ///
     /// This allows for independent reading and writing operations.
-    pub fn into_split(self) -> (AsyncV1TransportReceiver, AsyncV1TransportSender) {
-        (self.receiver, self.sender)
+    pub fn into_split(self) -> (AsyncV1TransportReader<R>, AsyncV1TransportWriter<W>) {
+        (self.reader, self.writer)
     }
 }
 
@@ -265,9 +269,10 @@ mod tests {
     async fn test_basic_message_receive() {
         let payload = NetworkMessage::Ping(42);
         let message_bytes = create_test_message(Magic::BITCOIN, payload.clone());
-        let mut mock_reader = MockIoBuilder::new().read(&message_bytes).build();
-        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
-        let received = transport.receive(&mut mock_reader).await.unwrap();
+        let mock_reader = MockIoBuilder::new().read(&message_bytes).build();
+        let mock_writer = Vec::new();
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, mock_writer);
+        let received = transport.read().await.unwrap();
 
         match received {
             NetworkMessage::Ping(nonce) => assert_eq!(nonce, 42),
@@ -277,27 +282,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_message() {
-        let transport = AsyncV1Transport::new(Magic::BITCOIN);
-        let mut write_buffer = Vec::new();
+        let mock_reader = MockIoBuilder::new().build();
+        let write_buffer = Vec::new();
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, write_buffer);
 
         let message = NetworkMessage::Ping(42);
-        transport
-            .send(message.clone(), &mut write_buffer)
-            .await
-            .unwrap();
+        transport.write(message.clone()).await.unwrap();
 
+        // Get the writer back to check the written data
+        let (_, writer) = transport.into_split();
         let expected = create_test_message(Magic::BITCOIN, message);
-        assert_eq!(write_buffer, expected);
+        assert_eq!(writer.writer, expected);
     }
 
     #[tokio::test]
     async fn test_magic_mismatch() {
         let payload = NetworkMessage::Ping(42);
         let message_bytes = create_test_message(Magic::TESTNET4, payload);
-        let mut mock_reader = MockIoBuilder::new().read(&message_bytes).build();
-        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
+        let mock_reader = MockIoBuilder::new().read(&message_bytes).build();
+        let mock_writer = Vec::new();
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, mock_writer);
 
-        let result = transport.receive(&mut mock_reader).await;
+        let result = transport.read().await;
         assert!(matches!(result, Err(TransportError::MagicMismatch)));
     }
 
@@ -324,10 +330,11 @@ mod tests {
         let mut test_data = Vec::new();
         test_data.extend_from_slice(&header);
         test_data.extend_from_slice(&invalid_payload);
-        let mut mock_reader = MockIoBuilder::new().read(&test_data).build();
-        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
+        let mock_reader = MockIoBuilder::new().read(&test_data).build();
+        let mock_writer = Vec::new();
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, mock_writer);
 
-        let result = transport.receive(&mut mock_reader).await;
+        let result = transport.read().await;
         assert!(matches!(result, Err(TransportError::Deserialize(_))));
     }
 
@@ -335,10 +342,11 @@ mod tests {
     async fn test_unexpected_eof_during_header() {
         // Create partial message less than header size.
         let partial_data = vec![0; 10];
-        let mut mock_reader = MockIoBuilder::new().read(&partial_data).build();
-        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
+        let mock_reader = MockIoBuilder::new().read(&partial_data).build();
+        let mock_writer = Vec::new();
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, mock_writer);
 
-        let result = transport.receive(&mut mock_reader).await;
+        let result = transport.read().await;
         assert!(matches!(result, Err(TransportError::Io(_))));
     }
 
@@ -349,10 +357,11 @@ mod tests {
         // Truncate the message to include header but not full payload
         message_bytes.truncate(HEADER_SIZE + 2);
 
-        let mut mock_reader = MockIoBuilder::new().read(&message_bytes).build();
-        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
+        let mock_reader = MockIoBuilder::new().read(&message_bytes).build();
+        let mock_writer = Vec::new();
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, mock_writer);
 
-        let result = transport.receive(&mut mock_reader).await;
+        let result = transport.read().await;
         assert!(matches!(result, Err(TransportError::Io(_))));
     }
 
@@ -368,9 +377,10 @@ mod tests {
             mock_reader.read(&message_bytes[i..i + 1]);
         }
 
-        let mut mock_reader = mock_reader.build();
-        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
-        let received = transport.receive(&mut mock_reader).await.unwrap();
+        let mock_reader = mock_reader.build();
+        let mock_writer = Vec::new();
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, mock_writer);
+        let received = transport.read().await.unwrap();
 
         match received {
             NetworkMessage::Ping(nonce) => assert_eq!(nonce, 42),
@@ -389,16 +399,17 @@ mod tests {
         combined.extend_from_slice(&message1);
         combined.extend_from_slice(&message2);
 
-        let mut mock_reader = MockIoBuilder::new().read(&combined).build();
-        let mut transport = AsyncV1Transport::new(Magic::BITCOIN);
+        let mock_reader = MockIoBuilder::new().read(&combined).build();
+        let mock_writer = Vec::new();
+        let mut transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, mock_writer);
 
-        let received1 = transport.receive(&mut mock_reader).await.unwrap();
+        let received1 = transport.read().await.unwrap();
         match received1 {
             NetworkMessage::Ping(nonce) => assert_eq!(nonce, 42),
             _ => panic!("Expected Ping message, got {received1:?}"),
         }
 
-        let received2 = transport.receive(&mut mock_reader).await.unwrap();
+        let received2 = transport.read().await.unwrap();
         match received2 {
             NetworkMessage::Ping(nonce) => assert_eq!(nonce, 43),
             _ => panic!("Expected Ping message, got {received2:?}"),
@@ -408,28 +419,26 @@ mod tests {
     #[tokio::test]
     async fn test_transport_split() {
         // Test sending with the split sender
-        let transport = AsyncV1Transport::new(Magic::BITCOIN);
-        let (_, sender) = transport.into_split();
-        let mut write_buffer = Vec::new();
+        let mock_reader = MockIoBuilder::new().build();
+        let write_buffer = Vec::new();
+        let transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, write_buffer);
+        let (_, mut sender) = transport.into_split();
 
         let message = NetworkMessage::Ping(42);
-        sender
-            .send(message.clone(), &mut write_buffer)
-            .await
-            .unwrap();
+        sender.write(message.clone()).await.unwrap();
 
         let expected = create_test_message(Magic::BITCOIN, message);
-        assert_eq!(write_buffer, expected);
+        assert_eq!(sender.writer, expected);
 
         // Test receiving with the split receiver
-        let transport = AsyncV1Transport::new(Magic::BITCOIN);
-        let (mut receiver, _) = transport.into_split();
-
         let payload = NetworkMessage::Ping(42);
         let message_bytes = create_test_message(Magic::BITCOIN, payload.clone());
-        let mut mock_reader = MockIoBuilder::new().read(&message_bytes).build();
+        let mock_reader = MockIoBuilder::new().read(&message_bytes).build();
+        let mock_writer = Vec::new();
+        let transport = AsyncV1Transport::new(Magic::BITCOIN, mock_reader, mock_writer);
+        let (mut receiver, _) = transport.into_split();
 
-        let received = receiver.receive(&mut mock_reader).await.unwrap();
+        let received = receiver.read().await.unwrap();
         match received {
             NetworkMessage::Ping(nonce) => assert_eq!(nonce, 42),
             _ => panic!("Expected Ping message, got {received:?}"),

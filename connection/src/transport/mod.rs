@@ -58,7 +58,7 @@
 mod v1;
 mod v2;
 
-pub use v1::{AsyncV1Transport, AsyncV1TransportReceiver, AsyncV1TransportSender};
+pub use v1::{AsyncV1Transport, AsyncV1TransportReader, AsyncV1TransportWriter};
 pub use v2::{AsyncV2Transport, AsyncV2TransportReceiver, AsyncV2TransportSender};
 
 use bip324::AsyncProtocol;
@@ -123,7 +123,7 @@ impl From<encode::Error> for TransportError {
 #[derive(Debug)]
 pub enum TransportReader<R> {
     /// V1 protocol with plaintext messages receiver.
-    V1(AsyncV1TransportReceiver, R),
+    V1(AsyncV1TransportReader<R>),
     /// V2 protocol using BIP-324 encrypted transport receiver.
     V2(AsyncV2TransportReceiver, R),
 }
@@ -135,7 +135,7 @@ pub enum TransportReader<R> {
 #[derive(Debug)]
 pub enum TransportWriter<W> {
     /// V1 protocol with plaintext messages sender.
-    V1(AsyncV1TransportSender, W),
+    V1(AsyncV1TransportWriter<W>),
     /// V2 protocol using BIP-324 encrypted transport sender.
     V2(AsyncV2TransportSender, W),
 }
@@ -169,7 +169,7 @@ where
     /// without data loss or protocol corruption.
     pub async fn read(&mut self) -> Result<NetworkMessage, TransportError> {
         match self {
-            TransportReader::V1(v1, reader) => v1.receive(reader).await,
+            TransportReader::V1(v1) => v1.read().await,
             TransportReader::V2(v2, reader) => v2.receive(reader).await,
         }
     }
@@ -201,9 +201,7 @@ where
     /// * Encryption fails (V2 only)
     pub async fn write(&mut self, message: NetworkMessage) -> Result<(), TransportError> {
         match self {
-            TransportWriter::V1(v1, writer) => {
-                v1.send(message, writer).await.map_err(TransportError::Io)
-            }
+            TransportWriter::V1(v1) => v1.write(message).await.map_err(TransportError::Io),
             TransportWriter::V2(v2, writer) => v2.send(message, writer).await,
         }
     }
@@ -262,7 +260,7 @@ where
 #[derive(Debug)]
 pub enum Transport<R, W> {
     /// V1 protocol with plaintext messages.
-    V1(AsyncV1Transport, R, W),
+    V1(AsyncV1Transport<R, W>),
     /// V2 protocol using BIP-324 encrypted transport.
     V2(AsyncV2Transport, R, W),
 }
@@ -274,7 +272,7 @@ where
 {
     /// Create a new V1 transport.
     pub fn v1(network_magic: Magic, reader: R, writer: W) -> Self {
-        Self::V1(AsyncV1Transport::new(network_magic), reader, writer)
+        Self::V1(AsyncV1Transport::new(network_magic, reader, writer))
     }
 
     /// Create a new V2 transport.
@@ -292,12 +290,9 @@ where
     /// A tuple containing the receiver and sender halves of the transport.
     pub fn into_split(self) -> (TransportReader<R>, TransportWriter<W>) {
         match self {
-            Self::V1(v1, reader, writer) => {
+            Self::V1(v1) => {
                 let (receiver, sender) = v1.into_split();
-                (
-                    TransportReader::V1(receiver, reader),
-                    TransportWriter::V1(sender, writer),
-                )
+                (TransportReader::V1(receiver), TransportWriter::V1(sender))
             }
             Self::V2(v2, reader, writer) => {
                 let (receiver, sender) = v2.into_split();
@@ -331,7 +326,7 @@ where
     /// * Encryption fails (V2 only)
     pub async fn write(&mut self, message: NetworkMessage) -> Result<(), TransportError> {
         match self {
-            Self::V1(v1, _, writer) => v1.send(message, writer).await,
+            Self::V1(v1) => v1.write(message).await,
             Self::V2(v2, _, writer) => v2.send(message, writer).await,
         }
     }
@@ -361,7 +356,7 @@ where
     /// without data loss or protocol corruption.
     pub async fn read(&mut self) -> Result<NetworkMessage, TransportError> {
         match self {
-            Self::V1(v1, reader, _) => v1.receive(reader).await,
+            Self::V1(v1) => v1.read().await,
             Self::V2(v2, reader, _) => v2.receive(reader).await,
         }
     }

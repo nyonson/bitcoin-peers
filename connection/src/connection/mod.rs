@@ -410,11 +410,11 @@ mod tests {
         R: tokio::io::AsyncRead + Unpin + Send,
         W: tokio::io::AsyncWrite + Unpin + Send,
     {
-        let transport = Transport::V1(
-            AsyncV1Transport::new(bitcoin::p2p::Magic::BITCOIN),
+        let transport = Transport::V1(AsyncV1Transport::new(
+            bitcoin::p2p::Magic::BITCOIN,
             reader,
             writer,
-        );
+        ));
         AsyncConnection::new(peer, config, transport)
     }
 
