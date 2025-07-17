@@ -8,11 +8,10 @@
 use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
-use bitcoin_peers_connection::connection::futures::Connection;
-use bitcoin_peers_connection::connection::{
-    ConnectionConfiguration, FeaturePreferences, TransportPolicy,
+use bitcoin_peers_connection::{
+    futures::Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
+    TransportPolicy, UserAgent,
 };
-use bitcoin_peers_connection::{Peer, PeerProtocolVersion, UserAgent};
 use clap::Parser;
 use log::{debug, error, info};
 use std::net::IpAddr;
