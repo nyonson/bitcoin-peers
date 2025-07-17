@@ -8,8 +8,8 @@ use bitcoin::p2p::address::AddrV2;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::Network;
 use bitcoin_peers_connection::{
-    futures::Connection, ConnectionConfiguration, FeaturePreferences, Peer, PeerProtocolVersion,
-    TransportPolicy, UserAgent,
+    connection::futures::Connection, ConnectionConfiguration, FeaturePreferences, Peer,
+    PeerProtocolVersion, TransportPolicy, UserAgent,
 };
 use corepc_node as bitcoind;
 use std::net::Ipv4Addr;

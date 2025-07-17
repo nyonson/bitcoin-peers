@@ -112,20 +112,15 @@
 //!
 //! # Transport
 //!
-//! * [`Transport`] - Lower-level transport abstraction over both v1 and v2.
+//! * [`transport::Transport`] - Lower-level transport abstraction over both v1 and v2.
 
 pub mod connection;
-pub mod futures {
-    //! Re-export of async connection types for backward compatibility.
-    pub use crate::connection::futures::*;
-}
 mod peer;
 pub mod transport;
 mod user_agent;
 
 pub use connection::{
-    ConnectionConfiguration, ConnectionError, FeaturePreferences, TransportPolicy,
+    futures, ConnectionConfiguration, ConnectionError, FeaturePreferences, TransportPolicy,
 };
 pub use peer::{Peer, PeerProtocolVersion, PeerServices};
-pub use transport::{AsyncV1Transport, Transport};
 pub use user_agent::{UserAgent, UserAgentError};

@@ -188,7 +188,7 @@ where
 /// ```rust
 /// use bitcoin::p2p::Magic;
 /// use bitcoin::p2p::message::NetworkMessage;
-/// use bitcoin_peers_connection::AsyncV1Transport;
+/// use bitcoin_peers_connection::transport::AsyncV1Transport;
 /// use tokio::net::TcpStream;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
