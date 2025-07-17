@@ -1,3 +1,9 @@
+//! Crawler for bitcoin peer discovery.
+//!
+//! This module provides the [`Crawler`] struct which coordinates the entire peer discovery process.
+//! It manages configuration, spawns crawling sessions, and provides the main entry point for
+//! discovering bitcoin peers on the network.
+
 use crate::connection::PeerConnector;
 use crate::session::{CrawlSession, SessionConfig};
 use bitcoin::Network;
