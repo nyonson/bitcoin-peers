@@ -26,11 +26,11 @@ use tokio::time::timeout;
 ///   run on different threads. The async methods return futures that capture `&self` or
 ///   `&mut self`, and for these futures to be `Send`, the implementor must be `Send`.
 pub trait PeerConnection: Send {
-    fn send(
+    fn write(
         &mut self,
         message: NetworkMessage,
     ) -> impl Future<Output = Result<(), ConnectionError>> + Send;
-    fn receive(&mut self) -> impl Future<Output = Result<NetworkMessage, ConnectionError>> + Send;
+    fn read(&mut self) -> impl Future<Output = Result<NetworkMessage, ConnectionError>> + Send;
     fn peer(&self) -> impl Future<Output = Peer> + Send;
 
     /// Requests peer addresses from this connection by sending a getaddr message.
@@ -48,7 +48,7 @@ pub trait PeerConnection: Send {
         peer_timeout: Duration,
     ) -> impl Future<Output = Result<Vec<Peer>, ConnectionError>> + Send {
         async move {
-            self.send(NetworkMessage::GetAddr).await?;
+            self.write(NetworkMessage::GetAddr).await?;
             debug!("Sent getaddr message to peer");
 
             let mut all_peers = Vec::new();
@@ -61,7 +61,7 @@ pub trait PeerConnection: Send {
                     peer_timeout.saturating_sub(start_time.elapsed()),
                 );
 
-                let message = match timeout(timeout_duration, self.receive()).await {
+                let message = match timeout(timeout_duration, self.read()).await {
                     Ok(Ok(message)) => message,
                     Ok(Err(e)) => return Err(e),
                     Err(_) => {
@@ -112,7 +112,7 @@ pub trait PeerConnection: Send {
                     // Handling Ping's just in case it improves odds of getting more addresses.
                     NetworkMessage::Ping(nonce) => {
                         debug!("Received ping during get_peers, responding with pong");
-                        self.send(NetworkMessage::Pong(nonce)).await?
+                        self.write(NetworkMessage::Pong(nonce)).await?
                     }
                     _ => {
                         debug!("Received unexpected message in get_peers: {message:?}, ignoring");
@@ -135,14 +135,14 @@ pub trait PeerConnection: Send {
 
 /// Implementation of PeerConnection for the Connection type from bitcoin-peers-connection.
 impl PeerConnection for Connection {
-    fn send(
+    fn write(
         &mut self,
         message: NetworkMessage,
     ) -> impl Future<Output = Result<(), ConnectionError>> + Send {
         self.write(message)
     }
 
-    fn receive(&mut self) -> impl Future<Output = Result<NetworkMessage, ConnectionError>> + Send {
+    fn read(&mut self) -> impl Future<Output = Result<NetworkMessage, ConnectionError>> + Send {
         self.read()
     }
 
@@ -289,7 +289,7 @@ pub mod test_utils {
     }
 
     impl PeerConnection for MockPeerConnection {
-        async fn send(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
+        async fn write(&mut self, message: NetworkMessage) -> Result<(), ConnectionError> {
             if self.is_closed {
                 return Err(ConnectionError::Io(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -300,7 +300,7 @@ pub mod test_utils {
             Ok(())
         }
 
-        async fn receive(&mut self) -> Result<NetworkMessage, ConnectionError> {
+        async fn read(&mut self) -> Result<NetworkMessage, ConnectionError> {
             if self.is_closed {
                 return Err(ConnectionError::Io(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
