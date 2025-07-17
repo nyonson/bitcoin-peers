@@ -1,6 +1,6 @@
 [package]
 name = "bitcoin-peers-crawler"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 rust-version = "1.75"
 license = "CC0-1.0"
@@ -11,7 +11,7 @@ keywords = ["bitcoin", "network", "peer-to-peer", "crawler", "discovery"]
 categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
-bitcoin-peers-connection = { version = "0.1.0", path = "../connection" }
+bitcoin-peers-connection = { version = "0.2.0", path = "../connection" }
 bitcoin = { version = "0.32.4" }
 tokio = { version = "1.10.0", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 log = { version = "0.4.8" }

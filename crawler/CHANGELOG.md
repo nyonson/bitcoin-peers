@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.6
+
+* Bump connection to v0.2.0.
+
 ## v0.1.5
 
 * Fix initial race condition. Usually only caught in tests where mocks finish much quicker than real life connections.
